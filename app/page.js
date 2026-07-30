@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
-import { Plus, Minus, Package, TrendingUp, TrendingDown, MapPin, Clock, X, ChevronDown, Trash2, Loader2, Wallet, LogOut, Lock } from 'lucide-react';
+import { Plus, Minus, Package, TrendingUp, TrendingDown, MapPin, Clock, X, ChevronDown, Trash2, Loader2, Wallet, LogOut, Lock, Receipt, CircleSlash, Banknote, QrCode } from 'lucide-react';
 
 const LOKASI_OPTIONS = ['Alun-alun Kidul Pagi', 'Alun-alun Kidul Sore', 'Rumah'];
 
@@ -93,8 +93,10 @@ function LoginScreen({ onLogin }) {
 function MainApp({ teamCode, onLogout }) {
   const [jenisList, setJenisList] = useState(null);
   const [transaksi, setTransaksi] = useState(null);
+  const [pengeluaran, setPengeluaran] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saveError, setSaveError] = useState(false);
+  const [loadFailMsg, setLoadFailMsg] = useState('');
   const [isOffline, setIsOffline] = useState(false);
   const [tab, setTab] = useState('stok');
 
@@ -113,21 +115,32 @@ function MainApp({ teamCode, onLogout }) {
   // ---- Load data + seed default jenis/varian if empty ----
   const loadData = useCallback(async () => {
     setLoading(true);
-    const { data: jenisRows, error: e1 } = await supabase
-      .from('jenis_es')
-      .select('*')
-      .eq('team_code', teamCode);
-    const { data: varianRows, error: e2 } = await supabase
-      .from('varian_es')
-      .select('*')
-      .eq('team_code', teamCode);
-    const { data: transRows, error: e3 } = await supabase
-      .from('transaksi')
-      .select('*')
-      .eq('team_code', teamCode)
-      .order('waktu', { ascending: false });
+    setLoadFailMsg('');
+    let jenisRows, varianRows, transRows, pengeluaranRows;
+    try {
+      const r1 = await supabase.from('jenis_es').select('*').eq('team_code', teamCode);
+      const r2 = await supabase.from('varian_es').select('*').eq('team_code', teamCode);
+      const r3 = await supabase.from('transaksi').select('*').eq('team_code', teamCode).order('waktu', { ascending: false });
+      const r4 = await supabase.from('pengeluaran').select('*').eq('team_code', teamCode).order('waktu', { ascending: false });
 
-    if (e1 || e2 || e3) {
+      if (r1.error || r2.error || r3.error || r4.error) {
+        const msg = (r1.error || r2.error || r3.error || r4.error).message || 'Gagal mengambil data dari database.';
+        setLoadFailMsg(msg);
+        setSaveError(true);
+        setLoading(false);
+        return;
+      }
+      jenisRows = r1.data;
+      varianRows = r2.data;
+      transRows = r3.data;
+      pengeluaranRows = r4.data;
+    } catch (err) {
+      // Network-level failure (wrong URL, no internet, CORS, etc.) — never let this spin forever
+      setLoadFailMsg(
+        err && err.message
+          ? `Tidak bisa terhubung ke database: ${err.message}`
+          : 'Tidak bisa terhubung ke database. Cek URL/key Supabase di lib/supabase.js.'
+      );
       setSaveError(true);
       setLoading(false);
       return;
@@ -145,6 +158,7 @@ function MainApp({ teamCode, onLogout }) {
             jenis_id: j.id + '-' + teamCode,
             nama: v.nama,
             harga: v.harga,
+            habis: false,
             team_code: teamCode,
           });
         }
@@ -154,17 +168,18 @@ function MainApp({ teamCode, onLogout }) {
       const combined = seedRows.map((j) => ({
         id: j.id,
         nama: j.nama,
-        varian: seedVarian.filter((v) => v.jenis_id === j.id).map((v) => ({ nama: v.nama, harga: v.harga })),
+        varian: seedVarian.filter((v) => v.jenis_id === j.id).map((v) => ({ nama: v.nama, harga: v.harga, habis: false })),
       }));
       setJenisList(combined);
       setTransaksi([]);
+      setPengeluaran([]);
     } else {
       const combined = jenisRows.map((j) => ({
         id: j.id,
         nama: j.nama,
         varian: (varianRows || [])
           .filter((v) => v.jenis_id === j.id)
-          .map((v) => ({ nama: v.nama, harga: v.harga })),
+          .map((v) => ({ nama: v.nama, harga: v.harga, habis: !!v.habis })),
       }));
       setJenisList(combined);
       setTransaksi(
@@ -176,7 +191,16 @@ function MainApp({ teamCode, onLogout }) {
           jumlah: t.jumlah,
           hargaSatuan: t.harga_satuan,
           lokasi: t.lokasi,
+          metodeBayar: t.metode_bayar,
           waktu: t.waktu,
+        }))
+      );
+      setPengeluaran(
+        (pengeluaranRows || []).map((p) => ({
+          id: p.id,
+          deskripsi: p.deskripsi,
+          jumlah: p.jumlah,
+          waktu: p.waktu,
         }))
       );
     }
@@ -196,12 +220,34 @@ function MainApp({ teamCode, onLogout }) {
       jumlah: t.jumlah,
       harga_satuan: t.hargaSatuan,
       lokasi: t.lokasi,
+      metode_bayar: t.metodeBayar || null,
       waktu: Date.now(),
       team_code: teamCode,
     };
     // optimistic update
     setTransaksi((prev) => [{ ...t, id: row.id, waktu: row.waktu }, ...prev]);
     const { error } = await supabase.from('transaksi').insert(row);
+    setSaveError(!!error);
+  };
+
+  const toggleHabis = async (jenisId, varianNama, habis) => {
+    setJenisList((prev) => prev.map((j) => (
+      j.id === jenisId ? { ...j, varian: j.varian.map((v) => (v.nama === varianNama ? { ...v, habis } : v)) } : j
+    )));
+    const { error } = await supabase.from('varian_es').update({ habis }).eq('jenis_id', jenisId).eq('nama', varianNama).eq('team_code', teamCode);
+    setSaveError(!!error);
+  };
+
+  const tambahPengeluaran = async (deskripsi, jumlah) => {
+    const row = { id: uid(), deskripsi, jumlah, waktu: Date.now(), team_code: teamCode };
+    setPengeluaran((prev) => [row, ...prev]);
+    const { error } = await supabase.from('pengeluaran').insert(row);
+    setSaveError(!!error);
+  };
+
+  const hapusPengeluaran = async (id) => {
+    setPengeluaran((prev) => prev.filter((p) => p.id !== id));
+    const { error } = await supabase.from('pengeluaran').delete().eq('id', id).eq('team_code', teamCode);
     setSaveError(!!error);
   };
 
@@ -253,7 +299,22 @@ function MainApp({ teamCode, onLogout }) {
     }
   }
 
-  if (loading || !jenisList || !transaksi) {
+  if (loadFailMsg) {
+    return (
+      <div style={styles.loginScreen}>
+        <style>{globalCss}</style>
+        <div style={styles.loginIce}>⚠️</div>
+        <div style={styles.loginTitle}>Gagal terhubung</div>
+        <div style={{ ...styles.loginSub, color: '#C0392B' }}>{loadFailMsg}</div>
+        <button style={styles.loginBtn} onClick={loadData}>Coba lagi</button>
+        <button style={{ ...styles.loginBtn, background: '#F0E4D4', color: '#8A6D4E', marginTop: 10 }} onClick={onLogout}>
+          Ganti kode tim
+        </button>
+      </div>
+    );
+  }
+
+  if (loading || !jenisList || !transaksi || !pengeluaran) {
     return (
       <div style={styles.loadingScreen}>
         <Loader2 className="spin" size={28} color="#F0A04B" />
@@ -269,13 +330,17 @@ function MainApp({ teamCode, onLogout }) {
       <div style={styles.tabBar}>
         <TabBtn active={tab === 'stok'} onClick={() => setTab('stok')} label="Stok" icon={<Package size={16} />} />
         <TabBtn active={tab === 'pendapatan'} onClick={() => setTab('pendapatan')} label="Pendapatan" icon={<Wallet size={16} />} />
+        <TabBtn active={tab === 'pengeluaran'} onClick={() => setTab('pengeluaran')} label="Pengeluaran" icon={<Receipt size={16} />} />
         <TabBtn active={tab === 'riwayat'} onClick={() => setTab('riwayat')} label="Riwayat" icon={<Clock size={16} />} />
         <TabBtn active={tab === 'kelola'} onClick={() => setTab('kelola')} label="Kelola" icon={<ChevronDown size={16} />} />
       </div>
 
       <div style={styles.content}>
-        {tab === 'stok' && <StokView jenisList={jenisList} stokMap={stokMap} onTambahTransaksi={tambahTransaksi} />}
-        {tab === 'pendapatan' && <PendapatanView transaksi={transaksi} />}
+        {tab === 'stok' && <StokView jenisList={jenisList} stokMap={stokMap} onTambahTransaksi={tambahTransaksi} onToggleHabis={toggleHabis} />}
+        {tab === 'pendapatan' && <PendapatanView transaksi={transaksi} pengeluaran={pengeluaran} />}
+        {tab === 'pengeluaran' && (
+          <PengeluaranView pengeluaran={pengeluaran} onTambah={tambahPengeluaran} onHapus={hapusPengeluaran} />
+        )}
         {tab === 'riwayat' && <RiwayatView transaksi={transaksi} jenisList={jenisList} onHapus={hapusTransaksi} />}
         {tab === 'kelola' && (
           <KelolaView
@@ -322,7 +387,7 @@ function TabBtn({ active, onClick, label, icon }) {
 }
 
 // ============ STOK VIEW ============
-function StokView({ jenisList, stokMap, onTambahTransaksi }) {
+function StokView({ jenisList, stokMap, onTambahTransaksi, onToggleHabis }) {
   const [modal, setModal] = useState(null);
   const totalStok = Object.values(stokMap).reduce((a, b) => a + b, 0);
 
@@ -345,15 +410,22 @@ function StokView({ jenisList, stokMap, onTambahTransaksi }) {
               const key = jenis.id + '||' + v.nama;
               const jumlah = stokMap[key] || 0;
               return (
-                <div key={v.nama} style={styles.varianRow}>
+                <div key={v.nama} style={{ ...styles.varianRow, opacity: v.habis ? 0.6 : 1 }}>
                   <div style={styles.varianInfo}>
-                    <div style={styles.varianName}>{v.nama}</div>
+                    <div style={styles.varianName}>{v.nama}{v.habis ? ' · Habis' : ''}</div>
                     <div style={styles.varianMetaRow}>
                       <span style={{ color: jumlah <= 0 ? '#C0392B' : '#2E7D5B', fontWeight: 600 }}>{jumlah} pcs</span>
                       <span style={styles.hargaTag}>{formatRupiah(v.harga)}</span>
                     </div>
                   </div>
                   <div style={styles.varianActions}>
+                    <button
+                      style={{ ...styles.roundBtn, background: v.habis ? '#F0E4D4' : '#FFF0DC', color: v.habis ? '#8A6D4E' : '#C0862E' }}
+                      onClick={() => onToggleHabis(jenis.id, v.nama, !v.habis)}
+                      aria-label={v.habis ? `Tandai ${v.nama} masih ada` : `Tandai ${v.nama} habis`}
+                    >
+                      <CircleSlash size={15} />
+                    </button>
                     <button
                       style={{ ...styles.roundBtn, background: '#FCEEE3', color: '#C0392B' }}
                       onClick={() => setModal({ jenisId: jenis.id, jenisNama: jenis.nama, varian: v.nama, harga: v.harga, tipe: 'keluar' })}
@@ -390,6 +462,7 @@ function StokView({ jenisList, stokMap, onTambahTransaksi }) {
 function TransaksiModal({ info, onClose, onSubmit }) {
   const [jumlah, setJumlah] = useState('');
   const [lokasi, setLokasi] = useState(info.tipe === 'masuk' ? '' : LOKASI_OPTIONS[0]);
+  const [metodeBayar, setMetodeBayar] = useState('Cash');
   const isMasuk = info.tipe === 'masuk';
   const n = parseInt(jumlah, 10) || 0;
   const totalHarga = n * info.harga;
@@ -403,6 +476,7 @@ function TransaksiModal({ info, onClose, onSubmit }) {
       jumlah: n,
       hargaSatuan: info.harga,
       lokasi: lokasi || null,
+      metodeBayar: isMasuk ? null : metodeBayar,
     });
   };
 
@@ -445,6 +519,26 @@ function TransaksiModal({ info, onClose, onSubmit }) {
           ))}
         </div>
 
+        {!isMasuk && (
+          <>
+            <label style={styles.fieldLabel}>Metode bayar</label>
+            <div style={styles.lokasiGrid}>
+              <button
+                onClick={() => setMetodeBayar('Cash')}
+                style={{ ...styles.lokasiChip, ...(metodeBayar === 'Cash' ? styles.lokasiChipActive : {}) }}
+              >
+                <Banknote size={13} style={{ marginRight: 5, verticalAlign: -2 }} />Cash
+              </button>
+              <button
+                onClick={() => setMetodeBayar('QRIS')}
+                style={{ ...styles.lokasiChip, ...(metodeBayar === 'QRIS' ? styles.lokasiChipActive : {}) }}
+              >
+                <QrCode size={13} style={{ marginRight: 5, verticalAlign: -2 }} />QRIS
+              </button>
+            </div>
+          </>
+        )}
+
         <button
           style={{ ...styles.submitBtn, background: isMasuk ? '#2E7D5B' : '#C0392B', opacity: n > 0 ? 1 : 0.5 }}
           onClick={submit}
@@ -458,7 +552,7 @@ function TransaksiModal({ info, onClose, onSubmit }) {
 }
 
 // ============ PENDAPATAN VIEW ============
-function PendapatanView({ transaksi }) {
+function PendapatanView({ transaksi, pengeluaran }) {
   const keluar = useMemo(() => transaksi.filter((t) => t.tipe === 'keluar'), [transaksi]);
 
   const now = new Date();
@@ -469,11 +563,15 @@ function PendapatanView({ transaksi }) {
   const startOfYear = new Date(now.getFullYear(), 0, 1).getTime();
 
   const sumSince = (ts) => keluar.filter((t) => t.waktu >= ts).reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0);
+  const sumPengeluaranSince = (ts) => pengeluaran.filter((p) => p.waktu >= ts).reduce((a, p) => a + p.jumlah, 0);
 
   const harian = sumSince(startOfDay);
   const mingguan = sumSince(startOfWeek);
   const bulanan = sumSince(startOfMonth);
   const tahunan = sumSince(startOfYear);
+
+  const pengeluaranHarian = sumPengeluaranSince(startOfDay);
+  const pengeluaranBulanan = sumPengeluaranSince(startOfMonth);
 
   const perLokasi = useMemo(() => {
     const map = {};
@@ -483,6 +581,9 @@ function PendapatanView({ transaksi }) {
     }
     return Object.entries(map).sort((a, b) => b[1] - a[1]);
   }, [keluar]);
+
+  const totalCash = useMemo(() => keluar.filter((t) => t.metodeBayar === 'Cash').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0), [keluar]);
+  const totalQris = useMemo(() => keluar.filter((t) => t.metodeBayar === 'QRIS').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0), [keluar]);
 
   if (keluar.length === 0) {
     return <EmptyState text="Belum ada penjualan tercatat. Pendapatan akan muncul setelah ada stok keluar." />;
@@ -497,6 +598,35 @@ function PendapatanView({ transaksi }) {
         <PendapatanCard label="Tahun ini" value={tahunan} />
       </div>
 
+      <div style={styles.untungCard}>
+        <div style={styles.untungRow}>
+          <span>Pendapatan bulan ini</span>
+          <strong style={{ color: '#2E7D5B' }}>{formatRupiah(bulanan)}</strong>
+        </div>
+        <div style={styles.untungRow}>
+          <span>Pengeluaran bulan ini</span>
+          <strong style={{ color: '#C0392B' }}>-{formatRupiah(pengeluaranBulanan)}</strong>
+        </div>
+        <div style={{ ...styles.untungRow, borderTop: '1px solid #EFDFC8', paddingTop: 8, marginTop: 4 }}>
+          <span style={{ fontWeight: 700 }}>Untung bersih bulan ini</span>
+          <strong style={{ color: '#3A2618', fontSize: 15 }}>{formatRupiah(bulanan - pengeluaranBulanan)}</strong>
+        </div>
+      </div>
+
+      {(totalCash > 0 || totalQris > 0) && (
+        <>
+          <div style={styles.sectionLabel}>Total berdasarkan metode bayar</div>
+          <div style={styles.lokasiRevRow}>
+            <div style={styles.lokasiRevName}><Banknote size={13} style={{ marginRight: 4, verticalAlign: -2 }} />Cash</div>
+            <div style={styles.lokasiRevValue}>{formatRupiah(totalCash)}</div>
+          </div>
+          <div style={styles.lokasiRevRow}>
+            <div style={styles.lokasiRevName}><QrCode size={13} style={{ marginRight: 4, verticalAlign: -2 }} />QRIS</div>
+            <div style={styles.lokasiRevValue}>{formatRupiah(totalQris)}</div>
+          </div>
+        </>
+      )}
+
       <div style={styles.sectionLabel}>Pendapatan per titik jual (total)</div>
       {perLokasi.map(([loc, total]) => (
         <div key={loc} style={styles.lokasiRevRow}>
@@ -504,6 +634,76 @@ function PendapatanView({ transaksi }) {
           <div style={styles.lokasiRevValue}>{formatRupiah(total)}</div>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ============ PENGELUARAN VIEW ============
+function PengeluaranView({ pengeluaran, onTambah, onHapus }) {
+  const [deskripsi, setDeskripsi] = useState('');
+  const [jumlah, setJumlah] = useState('');
+
+  const totalSemua = pengeluaran.reduce((a, p) => a + p.jumlah, 0);
+
+  const submit = () => {
+    const desk = deskripsi.trim();
+    const n = parseInt(jumlah, 10) || 0;
+    if (!desk || n <= 0) return;
+    onTambah(desk, n);
+    setDeskripsi('');
+    setJumlah('');
+  };
+
+  return (
+    <div>
+      <div style={{ ...styles.summaryCard, background: 'linear-gradient(135deg, #C0392B, #A73024)' }}>
+        <div style={styles.summaryLabel}>Total pengeluaran tercatat</div>
+        <div style={styles.summaryValue}>{formatRupiah(totalSemua)}</div>
+      </div>
+
+      <div style={styles.kelolaAddCard}>
+        <label style={styles.fieldLabel}>Catat pengeluaran baru</label>
+        <input
+          style={styles.input}
+          placeholder="Keterangan (mis. telur + gula)"
+          value={deskripsi}
+          onChange={(e) => setDeskripsi(e.target.value)}
+        />
+        <div style={styles.addRow}>
+          <input
+            type="number"
+            inputMode="numeric"
+            style={{ ...styles.input, marginBottom: 0, flex: 1 }}
+            placeholder="Jumlah (Rp)"
+            value={jumlah}
+            onChange={(e) => setJumlah(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && submit()}
+          />
+          <button style={styles.addBtn} onClick={submit}><Plus size={18} /></button>
+        </div>
+      </div>
+
+      {pengeluaran.length === 0 ? (
+        <EmptyState text="Belum ada pengeluaran tercatat." />
+      ) : (
+        pengeluaran.map((p) => (
+          <div key={p.id} style={styles.riwayatRow}>
+            <div style={{ ...styles.riwayatIcon, background: '#FCEEE3', color: '#C0392B' }}>
+              <Receipt size={16} />
+            </div>
+            <div style={styles.riwayatInfo}>
+              <div style={styles.riwayatTitle}>{p.deskripsi}</div>
+              <div style={styles.riwayatMeta}>
+                {new Date(p.waktu).toLocaleString('id-ID', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+              </div>
+            </div>
+            <div style={{ ...styles.riwayatQty, color: '#C0392B' }}>-{formatRupiah(p.jumlah)}</div>
+            <button style={styles.deleteBtn} onClick={() => onHapus(p.id)} aria-label="Hapus pengeluaran">
+              <Trash2 size={14} />
+            </button>
+          </div>
+        ))
+      )}
     </div>
   );
 }
@@ -753,6 +953,8 @@ const styles = {
   pendapatanCard: { background: '#fff', borderRadius: 14, padding: '14px 16px', boxShadow: '0 1px 3px rgba(58,38,24,0.06)' },
   pendapatanLabel: { fontSize: 11.5, color: '#B08968', fontWeight: 600 },
   pendapatanValue: { fontSize: 17, fontWeight: 800, color: '#3A2618', marginTop: 4 },
+  untungCard: { background: '#fff', borderRadius: 14, padding: '14px 16px', marginBottom: 18, boxShadow: '0 1px 3px rgba(58,38,24,0.06)' },
+  untungRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 13, color: '#3A2618', padding: '4px 0' },
   sectionLabel: { fontSize: 12.5, fontWeight: 700, color: '#8A6D4E', marginBottom: 10, marginTop: 4 },
   lokasiRevRow: {
     display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#fff',
