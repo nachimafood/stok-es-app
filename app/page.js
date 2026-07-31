@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
-import { Plus, Minus, Package, TrendingUp, TrendingDown, MapPin, Clock, X, ChevronDown, Trash2, Loader2, Wallet, LogOut, Lock, Receipt, CircleSlash, Banknote, QrCode } from 'lucide-react';
+import { Plus, Minus, Package, TrendingUp, TrendingDown, MapPin, Clock, X, ChevronDown, Trash2, Loader2, Wallet, LogOut, Lock, Receipt, CircleSlash, Banknote, QrCode, FileDown, Calendar, User, Pencil, Truck, Users, RotateCcw, CheckCircle2, AlertTriangle } from 'lucide-react';
 
 const LOKASI_OPTIONS = ['Alun-alun Kidul Pagi', 'Alun-alun Kidul Sore', 'Rumah'];
 
@@ -29,11 +29,14 @@ function formatRupiah(n) {
 // ============ APP ROOT: login gate ============
 export default function StokEsApp() {
   const [teamCode, setTeamCode] = useState('');
+  const [nama, setNama] = useState('');
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
-    const saved = typeof window !== 'undefined' ? localStorage.getItem('stokes-team-code') : null;
-    setTeamCode(saved || '');
+    const savedCode = typeof window !== 'undefined' ? localStorage.getItem('stokes-team-code') : null;
+    const savedNama = typeof window !== 'undefined' ? localStorage.getItem('stokes-nama') : null;
+    setTeamCode(savedCode || '');
+    setNama(savedNama || '');
     setChecking(false);
   }, []);
 
@@ -49,6 +52,13 @@ export default function StokEsApp() {
     setTeamCode('');
   };
 
+  const handleSetNama = (n) => {
+    const trimmed = n.trim();
+    if (!trimmed) return;
+    localStorage.setItem('stokes-nama', trimmed);
+    setNama(trimmed);
+  };
+
   if (checking) {
     return (
       <div style={styles.loadingScreen}>
@@ -59,8 +69,32 @@ export default function StokEsApp() {
   }
 
   if (!teamCode) return <LoginScreen onLogin={handleLogin} />;
+  if (!nama) return <NamaScreen onSubmit={handleSetNama} />;
 
-  return <MainApp teamCode={teamCode} onLogout={handleLogout} />;
+  return <MainApp teamCode={teamCode} nama={nama} onLogout={handleLogout} onGantiNama={handleSetNama} />;
+}
+
+function NamaScreen({ onSubmit }) {
+  const [val, setVal] = useState('');
+  return (
+    <div style={styles.loginScreen}>
+      <style>{globalCss}</style>
+      <div style={styles.loginIce}>👋</div>
+      <div style={styles.loginTitle}>Siapa kamu?</div>
+      <div style={styles.loginSub}>Nama ini akan otomatis tercatat di tiap transaksi yang kamu input dari HP ini</div>
+      <input
+        autoFocus
+        style={styles.loginInput}
+        placeholder="Nama kamu"
+        value={val}
+        onChange={(e) => setVal(e.target.value)}
+        onKeyDown={(e) => e.key === 'Enter' && onSubmit(val)}
+      />
+      <button style={styles.loginBtn} onClick={() => onSubmit(val)} disabled={!val.trim()}>
+        <User size={15} /> Lanjut
+      </button>
+    </div>
+  );
 }
 
 function LoginScreen({ onLogin }) {
@@ -90,10 +124,13 @@ function LoginScreen({ onLogin }) {
 }
 
 // ============ MAIN APP ============
-function MainApp({ teamCode, onLogout }) {
+function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
   const [jenisList, setJenisList] = useState(null);
   const [transaksi, setTransaksi] = useState(null);
   const [pengeluaran, setPengeluaran] = useState(null);
+  const [resellerList, setResellerList] = useState(null);
+  const [distribusiList, setDistribusiList] = useState(null);
+  const [countingList, setCountingList] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saveError, setSaveError] = useState(false);
   const [loadFailMsg, setLoadFailMsg] = useState('');
@@ -116,24 +153,26 @@ function MainApp({ teamCode, onLogout }) {
   const loadData = useCallback(async () => {
     setLoading(true);
     setLoadFailMsg('');
-    let jenisRows, varianRows, transRows, pengeluaranRows;
+    let jenisRows, varianRows, transRows, pengeluaranRows, resellerRows, distRows, distItemRows, countingRows;
     try {
       const r1 = await supabase.from('jenis_es').select('*').eq('team_code', teamCode);
       const r2 = await supabase.from('varian_es').select('*').eq('team_code', teamCode);
       const r3 = await supabase.from('transaksi').select('*').eq('team_code', teamCode).order('waktu', { ascending: false });
       const r4 = await supabase.from('pengeluaran').select('*').eq('team_code', teamCode).order('waktu', { ascending: false });
+      const r5 = await supabase.from('reseller').select('*').eq('team_code', teamCode);
+      const r6 = await supabase.from('distribusi').select('*').eq('team_code', teamCode).order('waktu_mulai', { ascending: false });
+      const r7 = await supabase.from('distribusi_item').select('*').eq('team_code', teamCode);
+      const r8 = await supabase.from('counting').select('*').eq('team_code', teamCode).order('waktu', { ascending: false });
 
-      if (r1.error || r2.error || r3.error || r4.error) {
-        const msg = (r1.error || r2.error || r3.error || r4.error).message || 'Gagal mengambil data dari database.';
-        setLoadFailMsg(msg);
+      const firstErr = r1.error || r2.error || r3.error || r4.error || r5.error || r6.error || r7.error || r8.error;
+      if (firstErr) {
+        setLoadFailMsg(firstErr.message || 'Gagal mengambil data dari database.');
         setSaveError(true);
         setLoading(false);
         return;
       }
-      jenisRows = r1.data;
-      varianRows = r2.data;
-      transRows = r3.data;
-      pengeluaranRows = r4.data;
+      jenisRows = r1.data; varianRows = r2.data; transRows = r3.data; pengeluaranRows = r4.data;
+      resellerRows = r5.data; distRows = r6.data; distItemRows = r7.data; countingRows = r8.data;
     } catch (err) {
       // Network-level failure (wrong URL, no internet, CORS, etc.) — never let this spin forever
       setLoadFailMsg(
@@ -173,6 +212,9 @@ function MainApp({ teamCode, onLogout }) {
       setJenisList(combined);
       setTransaksi([]);
       setPengeluaran([]);
+      setResellerList([]);
+      setDistribusiList([]);
+      setCountingList([]);
     } else {
       const combined = jenisRows.map((j) => ({
         id: j.id,
@@ -193,6 +235,7 @@ function MainApp({ teamCode, onLogout }) {
           lokasi: t.lokasi,
           metodeBayar: t.metode_bayar,
           waktu: t.waktu,
+          dicatatOleh: t.dicatat_oleh,
         }))
       );
       setPengeluaran(
@@ -201,6 +244,48 @@ function MainApp({ teamCode, onLogout }) {
           deskripsi: p.deskripsi,
           jumlah: p.jumlah,
           waktu: p.waktu,
+          dicatatOleh: p.dicatat_oleh,
+        }))
+      );
+      setResellerList(
+        (resellerRows || []).map((r) => ({
+          id: r.id,
+          nama: r.nama,
+          hargaKeReseller: r.harga_ke_reseller,
+          hargaJualReseller: r.harga_jual_reseller,
+          aktif: r.aktif !== false,
+        }))
+      );
+      setDistribusiList(
+        (distRows || []).map((d) => ({
+          id: d.id,
+          tujuanTipe: d.tujuan_tipe,
+          tujuanNama: d.tujuan_nama,
+          resellerId: d.reseller_id,
+          status: d.status,
+          waktuMulai: d.waktu_mulai,
+          waktuSelesai: d.waktu_selesai,
+          dicatatOleh: d.dicatat_oleh,
+          items: (distItemRows || [])
+            .filter((it) => it.distribusi_id === d.id)
+            .map((it) => ({
+              id: it.id,
+              jenisId: it.jenis_id,
+              varian: it.varian_nama,
+              jumlahDibawa: it.jumlah_dibawa,
+              jumlahRetur: it.jumlah_retur || 0,
+            })),
+        }))
+      );
+      setCountingList(
+        (countingRows || []).map((c) => ({
+          id: c.id,
+          distribusiId: c.distribusi_id,
+          jenisId: c.jenis_id,
+          jumlah: c.jumlah,
+          metodeBayar: c.metode_bayar,
+          dicatatOleh: c.dicatat_oleh,
+          waktu: c.waktu,
         }))
       );
     }
@@ -223,9 +308,10 @@ function MainApp({ teamCode, onLogout }) {
       metode_bayar: t.metodeBayar || null,
       waktu: Date.now(),
       team_code: teamCode,
+      dicatat_oleh: nama,
     };
     // optimistic update
-    setTransaksi((prev) => [{ ...t, id: row.id, waktu: row.waktu }, ...prev]);
+    setTransaksi((prev) => [{ ...t, id: row.id, waktu: row.waktu, dicatatOleh: nama }, ...prev]);
     const { error } = await supabase.from('transaksi').insert(row);
     setSaveError(!!error);
   };
@@ -239,8 +325,8 @@ function MainApp({ teamCode, onLogout }) {
   };
 
   const tambahPengeluaran = async (deskripsi, jumlah) => {
-    const row = { id: uid(), deskripsi, jumlah, waktu: Date.now(), team_code: teamCode };
-    setPengeluaran((prev) => [row, ...prev]);
+    const row = { id: uid(), deskripsi, jumlah, waktu: Date.now(), team_code: teamCode, dicatat_oleh: nama };
+    setPengeluaran((prev) => [{ ...row, dicatatOleh: nama }, ...prev]);
     const { error } = await supabase.from('pengeluaran').insert(row);
     setSaveError(!!error);
   };
@@ -249,6 +335,74 @@ function MainApp({ teamCode, onLogout }) {
     setPengeluaran((prev) => prev.filter((p) => p.id !== id));
     const { error } = await supabase.from('pengeluaran').delete().eq('id', id).eq('team_code', teamCode);
     setSaveError(!!error);
+  };
+
+  // ---- Reseller ----
+  const tambahReseller = async (nama) => {
+    const row = { id: uid(), nama, harga_ke_reseller: null, harga_jual_reseller: null, aktif: true, team_code: teamCode };
+    setResellerList((prev) => [...prev, { id: row.id, nama, hargaKeReseller: null, hargaJualReseller: null, aktif: true }]);
+    const { error } = await supabase.from('reseller').insert(row);
+    setSaveError(!!error);
+  };
+
+  const updateReseller = async (id, patch) => {
+    setResellerList((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+    const dbPatch = {};
+    if ('nama' in patch) dbPatch.nama = patch.nama;
+    if ('hargaKeReseller' in patch) dbPatch.harga_ke_reseller = patch.hargaKeReseller;
+    if ('hargaJualReseller' in patch) dbPatch.harga_jual_reseller = patch.hargaJualReseller;
+    if ('aktif' in patch) dbPatch.aktif = patch.aktif;
+    const { error } = await supabase.from('reseller').update(dbPatch).eq('id', id).eq('team_code', teamCode);
+    setSaveError(!!error);
+  };
+
+  // ---- Distribusi ----
+  const mulaiDistribusi = async (tujuanTipe, tujuanNama, resellerId, items) => {
+    const distId = uid();
+    const distRow = {
+      id: distId, tujuan_tipe: tujuanTipe, tujuan_nama: tujuanNama, reseller_id: resellerId || null,
+      status: 'berjalan', waktu_mulai: Date.now(), waktu_selesai: null, dicatat_oleh: nama, team_code: teamCode,
+    };
+    const itemRows = items.map((it) => ({
+      id: uid(), distribusi_id: distId, jenis_id: it.jenisId, varian_nama: it.varian,
+      jumlah_dibawa: it.jumlah, jumlah_retur: 0, team_code: teamCode,
+    }));
+    setDistribusiList((prev) => [{
+      id: distId, tujuanTipe, tujuanNama, resellerId, status: 'berjalan', waktuMulai: distRow.waktu_mulai,
+      waktuSelesai: null, dicatatOleh: nama,
+      items: itemRows.map((r) => ({ id: r.id, jenisId: r.jenis_id, varian: r.varian_nama, jumlahDibawa: r.jumlah_dibawa, jumlahRetur: 0 })),
+    }, ...prev]);
+    const { error: e1 } = await supabase.from('distribusi').insert(distRow);
+    const { error: e2 } = await supabase.from('distribusi_item').insert(itemRows);
+    setSaveError(!!(e1 || e2));
+  };
+
+  const tambahCounting = async (distribusiId, jenisId, jumlah, metodeBayar) => {
+    const row = { id: uid(), distribusi_id: distribusiId, jenis_id: jenisId, jumlah, metode_bayar: metodeBayar, dicatat_oleh: nama, waktu: Date.now(), team_code: teamCode };
+    setCountingList((prev) => [{ id: row.id, distribusiId, jenisId, jumlah, metodeBayar, dicatatOleh: nama, waktu: row.waktu }, ...prev]);
+    const { error } = await supabase.from('counting').insert(row);
+    setSaveError(!!error);
+  };
+
+  const hapusCounting = async (id) => {
+    setCountingList((prev) => prev.filter((c) => c.id !== id));
+    const { error } = await supabase.from('counting').delete().eq('id', id).eq('team_code', teamCode);
+    setSaveError(!!error);
+  };
+
+  const tutupDistribusi = async (distribusiId, returMap) => {
+    // returMap: { itemId: jumlahRetur }
+    setDistribusiList((prev) => prev.map((d) => (
+      d.id === distribusiId
+        ? { ...d, status: 'selesai', waktuSelesai: Date.now(), items: d.items.map((it) => ({ ...it, jumlahRetur: returMap[it.id] ?? it.jumlahRetur })) }
+        : d
+    )));
+    const updates = Object.entries(returMap).map(([itemId, jumlahRetur]) =>
+      supabase.from('distribusi_item').update({ jumlah_retur: jumlahRetur }).eq('id', itemId).eq('team_code', teamCode)
+    );
+    const { error: eStatus } = await supabase.from('distribusi').update({ status: 'selesai', waktu_selesai: Date.now() }).eq('id', distribusiId).eq('team_code', teamCode);
+    const results = await Promise.all(updates);
+    setSaveError(!!eStatus || results.some((r) => r.error));
   };
 
   const hapusTransaksi = async (id) => {
@@ -298,6 +452,15 @@ function MainApp({ teamCode, onLogout }) {
       stokMap[key] = (stokMap[key] || 0) + (t.tipe === 'masuk' ? t.jumlah : -t.jumlah);
     }
   }
+  if (distribusiList) {
+    for (const d of distribusiList) {
+      for (const it of d.items) {
+        const key = it.jenisId + '||' + it.varian;
+        const belumKembali = it.jumlahDibawa - it.jumlahRetur;
+        stokMap[key] = (stokMap[key] || 0) - belumKembali;
+      }
+    }
+  }
 
   if (loadFailMsg) {
     return (
@@ -314,7 +477,7 @@ function MainApp({ teamCode, onLogout }) {
     );
   }
 
-  if (loading || !jenisList || !transaksi || !pengeluaran) {
+  if (loading || !jenisList || !transaksi || !pengeluaran || !resellerList || !distribusiList || !countingList) {
     return (
       <div style={styles.loadingScreen}>
         <Loader2 className="spin" size={28} color="#F0A04B" />
@@ -326,22 +489,46 @@ function MainApp({ teamCode, onLogout }) {
   return (
     <div style={styles.app}>
       <style>{globalCss}</style>
-      <Header saveError={saveError} isOffline={isOffline} onLogout={onLogout} onRetry={loadData} />
+      <Header saveError={saveError} isOffline={isOffline} onLogout={onLogout} onRetry={loadData} nama={nama} onGantiNama={onGantiNama} />
       <div style={styles.tabBar}>
         <TabBtn active={tab === 'stok'} onClick={() => setTab('stok')} label="Stok" icon={<Package size={16} />} />
+        <TabBtn active={tab === 'distribusi'} onClick={() => setTab('distribusi')} label="Distribusi" icon={<Truck size={16} />} />
         <TabBtn active={tab === 'pendapatan'} onClick={() => setTab('pendapatan')} label="Pendapatan" icon={<Wallet size={16} />} />
         <TabBtn active={tab === 'pengeluaran'} onClick={() => setTab('pengeluaran')} label="Pengeluaran" icon={<Receipt size={16} />} />
         <TabBtn active={tab === 'riwayat'} onClick={() => setTab('riwayat')} label="Riwayat" icon={<Clock size={16} />} />
+        <TabBtn active={tab === 'laporan'} onClick={() => setTab('laporan')} label="Laporan" icon={<FileDown size={16} />} />
         <TabBtn active={tab === 'kelola'} onClick={() => setTab('kelola')} label="Kelola" icon={<ChevronDown size={16} />} />
       </div>
 
       <div style={styles.content}>
         {tab === 'stok' && <StokView jenisList={jenisList} stokMap={stokMap} onTambahTransaksi={tambahTransaksi} onToggleHabis={toggleHabis} />}
+        {tab === 'distribusi' && (
+          <DistribusiView
+            jenisList={jenisList}
+            stokMap={stokMap}
+            resellerList={resellerList}
+            distribusiList={distribusiList}
+            countingList={countingList}
+            onMulai={mulaiDistribusi}
+            onTambahCounting={tambahCounting}
+            onHapusCounting={hapusCounting}
+            onTutup={tutupDistribusi}
+          />
+        )}
         {tab === 'pendapatan' && <PendapatanView transaksi={transaksi} pengeluaran={pengeluaran} />}
         {tab === 'pengeluaran' && (
           <PengeluaranView pengeluaran={pengeluaran} onTambah={tambahPengeluaran} onHapus={hapusPengeluaran} />
         )}
         {tab === 'riwayat' && <RiwayatView transaksi={transaksi} jenisList={jenisList} onHapus={hapusTransaksi} />}
+        {tab === 'laporan' && (
+          <LaporanView
+            transaksi={transaksi}
+            pengeluaran={pengeluaran}
+            jenisList={jenisList}
+            distribusiList={distribusiList}
+            countingList={countingList}
+          />
+        )}
         {tab === 'kelola' && (
           <KelolaView
             jenisList={jenisList}
@@ -350,6 +537,13 @@ function MainApp({ teamCode, onLogout }) {
             onTambahVarian={tambahVarian}
             onHapusVarian={hapusVarian}
             onUpdateHarga={updateHargaVarian}
+            resellerList={resellerList}
+            onTambahReseller={tambahReseller}
+            onUpdateReseller={updateReseller}
+            transaksi={transaksi}
+            pengeluaran={pengeluaran}
+            distribusiList={distribusiList}
+            countingList={countingList}
           />
         )}
       </div>
@@ -357,22 +551,54 @@ function MainApp({ teamCode, onLogout }) {
   );
 }
 
-function Header({ saveError, isOffline, onLogout, onRetry }) {
+function Header({ saveError, isOffline, onLogout, onRetry, nama, onGantiNama }) {
+  const [editingNama, setEditingNama] = useState(false);
+  const [namaVal, setNamaVal] = useState(nama);
+
   let statusText = 'Tersinkron otomatis';
   let statusColor = '#B08968';
   if (isOffline) { statusText = 'Offline — akan sync saat online'; statusColor = '#C0862E'; }
   else if (saveError) { statusText = 'Gagal menyimpan — ketuk untuk coba lagi'; statusColor = '#C0392B'; }
 
   return (
-    <div style={styles.header}>
-      <div style={styles.headerIce}>🍧</div>
-      <div style={{ flex: 1 }} onClick={saveError ? onRetry : undefined}>
-        <div style={styles.headerTitle}>Stok Es</div>
-        <div style={{ fontSize: 12, color: statusColor, marginTop: 2 }}>{statusText}</div>
+    <div>
+      <div style={styles.header}>
+        <div style={styles.headerIce}>🍧</div>
+        <div style={{ flex: 1 }} onClick={saveError ? onRetry : undefined}>
+          <div style={styles.headerTitle}>Stok Es</div>
+          <div style={{ fontSize: 12, color: statusColor, marginTop: 2 }}>{statusText}</div>
+        </div>
+        <button style={styles.namaBtn} onClick={() => { setNamaVal(nama); setEditingNama(true); }} aria-label="Ganti nama pencatat">
+          <User size={13} /> {nama} <Pencil size={11} />
+        </button>
+        <button style={styles.logoutBtn} onClick={onLogout} aria-label="Ganti tim">
+          <LogOut size={16} />
+        </button>
       </div>
-      <button style={styles.logoutBtn} onClick={onLogout} aria-label="Ganti tim">
-        <LogOut size={16} />
-      </button>
+
+      {editingNama && (
+        <div style={styles.overlay} onClick={() => setEditingNama(false)}>
+          <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <div style={styles.modalTitle}>Ganti nama pencatat</div>
+              <button style={styles.closeBtn} onClick={() => setEditingNama(false)}><X size={18} /></button>
+            </div>
+            <input
+              autoFocus
+              style={styles.input}
+              value={namaVal}
+              onChange={(e) => setNamaVal(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && namaVal.trim() && (onGantiNama(namaVal), setEditingNama(false))}
+            />
+            <button
+              style={{ ...styles.submitBtn, background: '#3A2618' }}
+              onClick={() => { if (namaVal.trim()) { onGantiNama(namaVal); setEditingNama(false); } }}
+            >
+              Simpan
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -412,7 +638,7 @@ function StokView({ jenisList, stokMap, onTambahTransaksi, onToggleHabis }) {
               return (
                 <div key={v.nama} style={{ ...styles.varianRow, opacity: v.habis ? 0.6 : 1 }}>
                   <div style={styles.varianInfo}>
-                    <div style={styles.varianName}>{v.nama}{v.habis ? ' · Habis' : ''}</div>
+                    <div style={styles.varianName}>{v.nama}{v.habis ? ' · Bahan habis' : ''}</div>
                     <div style={styles.varianMetaRow}>
                       <span style={{ color: jumlah <= 0 ? '#C0392B' : '#2E7D5B', fontWeight: 600 }}>{jumlah} pcs</span>
                       <span style={styles.hargaTag}>{formatRupiah(v.harga)}</span>
@@ -422,7 +648,7 @@ function StokView({ jenisList, stokMap, onTambahTransaksi, onToggleHabis }) {
                     <button
                       style={{ ...styles.roundBtn, background: v.habis ? '#F0E4D4' : '#FFF0DC', color: v.habis ? '#8A6D4E' : '#C0862E' }}
                       onClick={() => onToggleHabis(jenis.id, v.nama, !v.habis)}
-                      aria-label={v.habis ? `Tandai ${v.nama} masih ada` : `Tandai ${v.nama} habis`}
+                      aria-label={v.habis ? `Tandai bahan ${v.nama} masih ada` : `Tandai bahan ${v.nama} habis`}
                     >
                       <CircleSlash size={15} />
                     </button>
@@ -695,6 +921,7 @@ function PengeluaranView({ pengeluaran, onTambah, onHapus }) {
               <div style={styles.riwayatTitle}>{p.deskripsi}</div>
               <div style={styles.riwayatMeta}>
                 {new Date(p.waktu).toLocaleString('id-ID', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                {p.dicatatOleh ? <> · {p.dicatatOleh}</> : null}
               </div>
             </div>
             <div style={{ ...styles.riwayatQty, color: '#C0392B' }}>-{formatRupiah(p.jumlah)}</div>
@@ -742,6 +969,7 @@ function RiwayatView({ transaksi, jenisList, onHapus }) {
               {new Date(t.waktu).toLocaleString('id-ID', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
               {t.lokasi && <> · <MapPin size={11} style={{ display: 'inline', verticalAlign: -1 }} /> {t.lokasi}</>}
               {t.tipe === 'keluar' && t.hargaSatuan ? <> · {formatRupiah(t.jumlah * t.hargaSatuan)}</> : null}
+              {t.dicatatOleh ? <> · {t.dicatatOleh}</> : null}
             </div>
           </div>
           <div style={{ ...styles.riwayatQty, color: t.tipe === 'masuk' ? '#2E7D5B' : '#C0392B' }}>
@@ -757,10 +985,20 @@ function RiwayatView({ transaksi, jenisList, onHapus }) {
 }
 
 // ============ KELOLA VIEW ============
-function KelolaView({ jenisList, onTambahJenis, onHapusJenis, onTambahVarian, onHapusVarian, onUpdateHarga }) {
+function KelolaView({ jenisList, onTambahJenis, onHapusJenis, onTambahVarian, onHapusVarian, onUpdateHarga, resellerList, onTambahReseller, onUpdateReseller, transaksi, pengeluaran, distribusiList, countingList }) {
   const [namaJenisBaru, setNamaJenisBaru] = useState('');
   const [varianInput, setVarianInput] = useState({});
   const [hargaInput, setHargaInput] = useState({});
+  const [namaResellerBaru, setNamaResellerBaru] = useState('');
+
+  const anggotaTim = useMemo(() => {
+    const set = new Set();
+    transaksi.forEach((t) => t.dicatatOleh && set.add(t.dicatatOleh));
+    pengeluaran.forEach((p) => p.dicatatOleh && set.add(p.dicatatOleh));
+    distribusiList.forEach((d) => d.dicatatOleh && set.add(d.dicatatOleh));
+    countingList.forEach((c) => c.dicatatOleh && set.add(c.dicatatOleh));
+    return Array.from(set).sort();
+  }, [transaksi, pengeluaran, distribusiList, countingList]);
 
   const submitJenis = () => {
     const nama = namaJenisBaru.trim();
@@ -776,6 +1014,13 @@ function KelolaView({ jenisList, onTambahJenis, onHapusJenis, onTambahVarian, on
     onTambahVarian(jenisId, nama, harga);
     setVarianInput((s) => ({ ...s, [jenisId]: '' }));
     setHargaInput((s) => ({ ...s, [jenisId]: '' }));
+  };
+
+  const submitReseller = () => {
+    const nama = namaResellerBaru.trim();
+    if (!nama) return;
+    onTambahReseller(nama);
+    setNamaResellerBaru('');
   };
 
   return (
@@ -846,6 +1091,656 @@ function KelolaView({ jenisList, onTambahJenis, onHapusJenis, onTambahVarian, on
           </div>
         </div>
       ))}
+
+      <div style={{ ...styles.sectionLabel, marginTop: 20 }}><Users size={13} style={{ marginRight: 5, verticalAlign: -2 }} />Reseller</div>
+      <div style={styles.kelolaAddCard}>
+        <label style={styles.fieldLabel}>Tambah reseller baru</label>
+        <div style={styles.addRow}>
+          <input
+            style={{ ...styles.input, marginBottom: 0, flex: 1 }}
+            placeholder="Nama reseller"
+            value={namaResellerBaru}
+            onChange={(e) => setNamaResellerBaru(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && submitReseller()}
+          />
+          <button style={styles.addBtn} onClick={submitReseller}><Plus size={18} /></button>
+        </div>
+      </div>
+
+      {resellerList.length === 0 ? (
+        <div style={styles.varianEmptyRow}>Belum ada reseller.</div>
+      ) : (
+        resellerList.map((r) => (
+          <div key={r.id} style={styles.kelolaJenisCard}>
+            <div style={styles.kelolaJenisHeader}>
+              <div style={{ ...styles.jenisTitle, opacity: r.aktif ? 1 : 0.5 }}>{r.nama}{!r.aktif ? ' (nonaktif)' : ''}</div>
+              <button
+                style={{ ...styles.deleteBtnSmall, color: r.aktif ? '#C0392B' : '#2E7D5B' }}
+                onClick={() => onUpdateReseller(r.id, { aktif: !r.aktif })}
+                aria-label={r.aktif ? `Nonaktifkan ${r.nama}` : `Aktifkan ${r.nama}`}
+              >
+                {r.aktif ? <CircleSlash size={15} /> : <CheckCircle2 size={15} />}
+              </button>
+            </div>
+            <div style={styles.addRow}>
+              <div style={styles.hargaEditWrap}>
+                <span style={styles.hargaPrefix}>Harga ke reseller Rp</span>
+                <input
+                  type="number" inputMode="numeric" style={styles.hargaEditInput}
+                  defaultValue={r.hargaKeReseller || ''}
+                  placeholder="—"
+                  onBlur={(e) => onUpdateReseller(r.id, { hargaKeReseller: parseInt(e.target.value, 10) || null })}
+                />
+              </div>
+            </div>
+            <div style={{ ...styles.addRow, marginTop: 6 }}>
+              <div style={styles.hargaEditWrap}>
+                <span style={styles.hargaPrefix}>Harga jual reseller Rp</span>
+                <input
+                  type="number" inputMode="numeric" style={styles.hargaEditInput}
+                  defaultValue={r.hargaJualReseller || ''}
+                  placeholder="—"
+                  onBlur={(e) => onUpdateReseller(r.id, { hargaJualReseller: parseInt(e.target.value, 10) || null })}
+                />
+              </div>
+            </div>
+          </div>
+        ))
+      )}
+
+      <div style={{ ...styles.sectionLabel, marginTop: 20 }}><User size={13} style={{ marginRight: 5, verticalAlign: -2 }} />Anggota Tim</div>
+      {anggotaTim.length === 0 ? (
+        <div style={styles.varianEmptyRow}>Belum ada yang tercatat.</div>
+      ) : (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+          {anggotaTim.map((n) => (
+            <div key={n} style={styles.varianChip}><User size={11} style={{ marginRight: 2 }} />{n}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============ LAPORAN VIEW ============
+function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, countingList }) {
+  const [mode, setMode] = useState('harian'); // 'harian' | 'periode' | 'semua'
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const [tanggal, setTanggal] = useState(todayStr);
+  const [dari, setDari] = useState(todayStr);
+  const [sampai, setSampai] = useState(todayStr);
+
+  const jenisNama = (id) => jenisList.find((j) => j.id === id)?.nama || id;
+
+  const range = useMemo(() => {
+    if (mode === 'semua') return { start: 0, end: Infinity, label: 'Semua riwayat' };
+    if (mode === 'harian') {
+      const d = new Date(tanggal + 'T00:00:00');
+      const start = d.getTime();
+      const end = start + 86400000;
+      return { start, end, label: d.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }) };
+    }
+    const dStart = new Date(dari + 'T00:00:00').getTime();
+    const dEnd = new Date(sampai + 'T00:00:00').getTime() + 86400000;
+    return {
+      start: dStart,
+      end: dEnd,
+      label: `${new Date(dari).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })} — ${new Date(sampai).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}`,
+    };
+  }, [mode, tanggal, dari, sampai]);
+
+  const filteredTransaksi = useMemo(
+    () => transaksi.filter((t) => t.waktu >= range.start && t.waktu < range.end).sort((a, b) => a.waktu - b.waktu),
+    [transaksi, range]
+  );
+  const filteredPengeluaran = useMemo(
+    () => pengeluaran.filter((p) => p.waktu >= range.start && p.waktu < range.end).sort((a, b) => a.waktu - b.waktu),
+    [pengeluaran, range]
+  );
+
+  const totalMasuk = filteredTransaksi.filter((t) => t.tipe === 'masuk').reduce((a, t) => a + t.jumlah, 0);
+  const totalKeluarPcs = filteredTransaksi.filter((t) => t.tipe === 'keluar').reduce((a, t) => a + t.jumlah, 0);
+  const totalPendapatan = filteredTransaksi.filter((t) => t.tipe === 'keluar').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0);
+  const totalPengeluaran = filteredPengeluaran.reduce((a, p) => a + p.jumlah, 0);
+  const untungBersih = totalPendapatan - totalPengeluaran;
+
+  const filteredDistribusi = useMemo(
+    () => (distribusiList || []).filter((d) => d.waktuMulai >= range.start && d.waktuMulai < range.end).sort((a, b) => a.waktuMulai - b.waktuMulai),
+    [distribusiList, range]
+  );
+
+  const downloadCSV = () => {
+    const rows = [];
+    rows.push(['Laporan Stok Es']);
+    rows.push(['Periode', range.label]);
+    rows.push([]);
+    rows.push(['=== TRANSAKSI ===']);
+    rows.push(['Tanggal', 'Jenis', 'Varian', 'Tipe', 'Jumlah', 'Harga Satuan', 'Total', 'Titik Jual', 'Metode Bayar', 'Dicatat Oleh']);
+    filteredTransaksi.forEach((t) => {
+      rows.push([
+        new Date(t.waktu).toLocaleString('id-ID'),
+        jenisNama(t.jenisId),
+        t.varian,
+        t.tipe,
+        t.jumlah,
+        t.hargaSatuan || '',
+        t.tipe === 'keluar' ? t.jumlah * (t.hargaSatuan || 0) : '',
+        t.lokasi || '',
+        t.metodeBayar || '',
+        t.dicatatOleh || '',
+      ]);
+    });
+    rows.push([]);
+    rows.push(['=== PENGELUARAN ===']);
+    rows.push(['Tanggal', 'Keterangan', 'Jumlah', 'Dicatat Oleh']);
+    filteredPengeluaran.forEach((p) => {
+      rows.push([new Date(p.waktu).toLocaleString('id-ID'), p.deskripsi, p.jumlah, p.dicatatOleh || '']);
+    });
+    rows.push([]);
+    rows.push(['=== DISTRIBUSI & RESELLER ===']);
+    rows.push(['Tanggal Mulai', 'Tujuan', 'Tipe', 'Status', 'Varian', 'Dibawa', 'Retur', 'Terjual', 'Dicatat Oleh']);
+    filteredDistribusi.forEach((d) => {
+      d.items.forEach((it) => {
+        rows.push([
+          new Date(d.waktuMulai).toLocaleString('id-ID'),
+          d.tujuanNama,
+          d.tujuanTipe === 'reseller' ? 'Reseller' : 'Titik Jual',
+          d.status,
+          `${jenisNama(it.jenisId)} - ${it.varian}`,
+          it.jumlahDibawa,
+          it.jumlahRetur,
+          it.jumlahDibawa - it.jumlahRetur,
+          d.dicatatOleh || '',
+        ]);
+      });
+    });
+    rows.push([]);
+    rows.push(['=== RINGKASAN ===']);
+    rows.push(['Total pendapatan', totalPendapatan]);
+    rows.push(['Total pengeluaran', totalPengeluaran]);
+    rows.push(['Untung bersih', untungBersih]);
+
+    const csv = rows.map((r) => r.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `laporan-stok-es-${todayStr}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadPDF = async () => {
+    const { jsPDF } = await import('jspdf');
+    const autoTable = (await import('jspdf-autotable')).default;
+    const doc = new jsPDF();
+
+    doc.setFontSize(16);
+    doc.text('Laporan Stok Es', 14, 16);
+    doc.setFontSize(10);
+    doc.text(`Periode: ${range.label}`, 14, 23);
+
+    autoTable(doc, {
+      startY: 28,
+      head: [['Ringkasan', 'Nilai']],
+      body: [
+        ['Total pendapatan', formatRupiah(totalPendapatan)],
+        ['Total pengeluaran', formatRupiah(totalPengeluaran)],
+        ['Untung bersih', formatRupiah(untungBersih)],
+        ['Total pcs masuk', String(totalMasuk)],
+        ['Total pcs terjual', String(totalKeluarPcs)],
+      ],
+      theme: 'grid',
+      headStyles: { fillColor: [240, 160, 75] },
+    });
+
+    autoTable(doc, {
+      startY: doc.lastAutoTable.finalY + 10,
+      head: [['Tanggal', 'Produk', 'Tipe', 'Jml', 'Total', 'Lokasi/Bayar', 'Oleh']],
+      body: filteredTransaksi.map((t) => [
+        new Date(t.waktu).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }),
+        `${jenisNama(t.jenisId)} - ${t.varian}`,
+        t.tipe,
+        t.jumlah,
+        t.tipe === 'keluar' ? formatRupiah(t.jumlah * (t.hargaSatuan || 0)) : '-',
+        [t.lokasi, t.metodeBayar].filter(Boolean).join(' / ') || '-',
+        t.dicatatOleh || '-',
+      ]),
+      theme: 'striped',
+      headStyles: { fillColor: [58, 38, 24] },
+      styles: { fontSize: 8 },
+    });
+
+    if (filteredPengeluaran.length > 0) {
+      autoTable(doc, {
+        startY: doc.lastAutoTable.finalY + 10,
+        head: [['Tanggal', 'Keterangan', 'Jumlah', 'Oleh']],
+        body: filteredPengeluaran.map((p) => [
+          new Date(p.waktu).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }),
+          p.deskripsi,
+          formatRupiah(p.jumlah),
+          p.dicatatOleh || '-',
+        ]),
+        theme: 'striped',
+        headStyles: { fillColor: [192, 57, 43] },
+        styles: { fontSize: 8 },
+      });
+    }
+
+    if (filteredDistribusi.length > 0) {
+      const distRows = [];
+      filteredDistribusi.forEach((d) => {
+        d.items.forEach((it) => {
+          distRows.push([
+            new Date(d.waktuMulai).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }),
+            d.tujuanNama,
+            d.tujuanTipe === 'reseller' ? 'Reseller' : 'Titik Jual',
+            `${jenisNama(it.jenisId)} - ${it.varian}`,
+            it.jumlahDibawa,
+            it.jumlahRetur,
+            it.jumlahDibawa - it.jumlahRetur,
+          ]);
+        });
+      });
+      autoTable(doc, {
+        startY: doc.lastAutoTable.finalY + 10,
+        head: [['Tanggal', 'Tujuan', 'Tipe', 'Varian', 'Dibawa', 'Retur', 'Terjual']],
+        body: distRows,
+        theme: 'striped',
+        headStyles: { fillColor: [46, 125, 91] },
+        styles: { fontSize: 8 },
+      });
+    }
+
+    doc.save(`laporan-stok-es-${todayStr}.pdf`);
+  };
+
+  return (
+    <div>
+      <div style={styles.kelolaAddCard}>
+        <label style={styles.fieldLabel}>Pilih periode laporan</label>
+        <div style={styles.lokasiGrid}>
+          <button onClick={() => setMode('harian')} style={{ ...styles.lokasiChip, ...(mode === 'harian' ? styles.lokasiChipActive : {}) }}>Harian</button>
+          <button onClick={() => setMode('periode')} style={{ ...styles.lokasiChip, ...(mode === 'periode' ? styles.lokasiChipActive : {}) }}>Rentang tanggal</button>
+          <button onClick={() => setMode('semua')} style={{ ...styles.lokasiChip, ...(mode === 'semua' ? styles.lokasiChipActive : {}) }}>Semua riwayat</button>
+        </div>
+
+        {mode === 'harian' && (
+          <>
+            <label style={styles.fieldLabel}>Tanggal</label>
+            <input type="date" style={styles.input} value={tanggal} onChange={(e) => setTanggal(e.target.value)} />
+          </>
+        )}
+        {mode === 'periode' && (
+          <div style={{ display: 'flex', gap: 10 }}>
+            <div style={{ flex: 1 }}>
+              <label style={styles.fieldLabel}>Dari</label>
+              <input type="date" style={styles.input} value={dari} onChange={(e) => setDari(e.target.value)} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={styles.fieldLabel}>Sampai</label>
+              <input type="date" style={styles.input} value={sampai} onChange={(e) => setSampai(e.target.value)} />
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div style={styles.untungCard}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: '#8A6D4E', marginBottom: 8 }}>
+          <Calendar size={13} style={{ marginRight: 5, verticalAlign: -2 }} />{range.label}
+        </div>
+        <div style={styles.untungRow}><span>Total pendapatan</span><strong style={{ color: '#2E7D5B' }}>{formatRupiah(totalPendapatan)}</strong></div>
+        <div style={styles.untungRow}><span>Total pengeluaran</span><strong style={{ color: '#C0392B' }}>-{formatRupiah(totalPengeluaran)}</strong></div>
+        <div style={{ ...styles.untungRow, borderTop: '1px solid #EFDFC8', paddingTop: 8, marginTop: 4 }}>
+          <span style={{ fontWeight: 700 }}>Untung bersih</span>
+          <strong style={{ color: '#3A2618', fontSize: 15 }}>{formatRupiah(untungBersih)}</strong>
+        </div>
+      </div>
+
+      {filteredTransaksi.length === 0 && filteredPengeluaran.length === 0 && filteredDistribusi.length === 0 ? (
+        <EmptyState text="Tidak ada data di periode ini." />
+      ) : (
+        <div style={{ display: 'flex', gap: 10, marginBottom: 8 }}>
+          <button style={{ ...styles.submitBtn, background: '#2E7D5B', flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }} onClick={downloadPDF}>
+            <FileDown size={16} /> PDF
+          </button>
+          <button style={{ ...styles.submitBtn, background: '#3A2618', flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }} onClick={downloadCSV}>
+            <FileDown size={16} /> Excel/CSV
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============ DISTRIBUSI VIEW ============
+function DistribusiView({ jenisList, stokMap, resellerList, distribusiList, countingList, onMulai, onTambahCounting, onHapusCounting, onTutup }) {
+  const [showMulai, setShowMulai] = useState(false);
+  const [openDist, setOpenDist] = useState(null); // distribusi object being managed
+
+  const berjalan = distribusiList.filter((d) => d.status === 'berjalan');
+  const selesai = distribusiList.filter((d) => d.status === 'selesai').sort((a, b) => b.waktuSelesai - a.waktuSelesai);
+
+  const resellerAktif = resellerList.filter((r) => r.aktif);
+
+  return (
+    <div>
+      <button style={{ ...styles.submitBtn, background: '#3A2618', marginBottom: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }} onClick={() => setShowMulai(true)}>
+        <Truck size={16} /> Mulai Distribusi Baru
+      </button>
+
+      {berjalan.length === 0 && selesai.length === 0 && (
+        <EmptyState text="Belum ada distribusi. Mulai distribusi untuk kirim stok ke titik jual atau reseller." />
+      )}
+
+      {berjalan.length > 0 && (
+        <>
+          <div style={styles.sectionLabel}>Sedang berjalan</div>
+          {berjalan.map((d) => (
+            <DistribusiCard key={d.id} d={d} jenisList={jenisList} countingList={countingList} onClick={() => setOpenDist(d)} />
+          ))}
+        </>
+      )}
+
+      {selesai.length > 0 && (
+        <>
+          <div style={{ ...styles.sectionLabel, marginTop: 16 }}>Sudah selesai</div>
+          {selesai.slice(0, 10).map((d) => (
+            <DistribusiCard key={d.id} d={d} jenisList={jenisList} countingList={countingList} onClick={() => setOpenDist(d)} selesai />
+          ))}
+        </>
+      )}
+
+      {showMulai && (
+        <MulaiDistribusiModal
+          jenisList={jenisList}
+          stokMap={stokMap}
+          resellerAktif={resellerAktif}
+          onClose={() => setShowMulai(false)}
+          onSubmit={(tujuanTipe, tujuanNama, resellerId, items) => { onMulai(tujuanTipe, tujuanNama, resellerId, items); setShowMulai(false); }}
+        />
+      )}
+
+      {openDist && (
+        <DetailDistribusiModal
+          d={openDist}
+          jenisList={jenisList}
+          countingList={countingList.filter((c) => c.distribusiId === openDist.id)}
+          onClose={() => setOpenDist(null)}
+          onTambahCounting={onTambahCounting}
+          onHapusCounting={onHapusCounting}
+          onTutup={(returMap) => { onTutup(openDist.id, returMap); setOpenDist(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function DistribusiCard({ d, jenisList, countingList, onClick, selesai }) {
+  const jenisNama = (id) => jenisList.find((j) => j.id === id)?.nama || id;
+  const totalDibawa = d.items.reduce((a, it) => a + it.jumlahDibawa, 0);
+  const totalRetur = d.items.reduce((a, it) => a + it.jumlahRetur, 0);
+  const totalCounting = countingList.filter((c) => c.distribusiId === d.id).reduce((a, c) => a + c.jumlah, 0);
+
+  return (
+    <button style={styles.distCard} onClick={onClick}>
+      <div style={styles.distCardHeader}>
+        <div style={styles.distCardTujuan}>
+          {d.tujuanTipe === 'reseller' ? <Users size={14} /> : <MapPin size={14} />} {d.tujuanNama}
+        </div>
+        <div style={{ ...styles.distBadge, background: selesai ? '#E4F3EA' : '#FFF0DC', color: selesai ? '#2E7D5B' : '#C0862E' }}>
+          {selesai ? 'Selesai' : 'Berjalan'}
+        </div>
+      </div>
+      <div style={styles.distCardMeta}>
+        {new Date(d.waktuMulai).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })}
+        {' · '}Dibawa {totalDibawa} pcs
+        {selesai && <> · Retur {totalRetur} pcs · Terjual {totalDibawa - totalRetur} pcs</>}
+        {!selesai && d.tujuanTipe === 'lokasi' && totalCounting > 0 && <> · Counting {totalCounting} pcs</>}
+      </div>
+      <div style={styles.distCardItems}>
+        {d.items.map((it) => `${jenisNama(it.jenisId)} - ${it.varian} (${it.jumlahDibawa})`).join(' · ')}
+      </div>
+    </button>
+  );
+}
+
+function MulaiDistribusiModal({ jenisList, stokMap, resellerAktif, onClose, onSubmit }) {
+  const [tujuanTipe, setTujuanTipe] = useState('lokasi');
+  const [tujuanNama, setTujuanNama] = useState(LOKASI_OPTIONS[0]);
+  const [resellerId, setResellerId] = useState(resellerAktif[0]?.id || '');
+  const [items, setItems] = useState([]); // {jenisId, varian, jumlah}
+  const [pickJenis, setPickJenis] = useState(jenisList[0]?.id || '');
+  const [pickVarian, setPickVarian] = useState(jenisList[0]?.varian[0]?.nama || '');
+  const [pickJumlah, setPickJumlah] = useState('');
+
+  const jenisAktif = jenisList.find((j) => j.id === pickJenis);
+
+  const tambahItem = () => {
+    const n = parseInt(pickJumlah, 10);
+    if (!n || n <= 0 || !pickVarian) return;
+    setItems((prev) => [...prev, { jenisId: pickJenis, varian: pickVarian, jumlah: n }]);
+    setPickJumlah('');
+  };
+
+  const hapusItem = (idx) => setItems((prev) => prev.filter((_, i) => i !== idx));
+
+  const submit = () => {
+    if (items.length === 0) return;
+    const namaTujuan = tujuanTipe === 'reseller' ? (resellerAktif.find((r) => r.id === resellerId)?.nama || '') : tujuanNama;
+    if (!namaTujuan) return;
+    onSubmit(tujuanTipe, namaTujuan, tujuanTipe === 'reseller' ? resellerId : null, items);
+  };
+
+  return (
+    <div style={styles.overlay} onClick={onClose}>
+      <div style={{ ...styles.modal, maxHeight: '85vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalHeader}>
+          <div style={styles.modalTitle}>Mulai Distribusi</div>
+          <button style={styles.closeBtn} onClick={onClose}><X size={18} /></button>
+        </div>
+
+        <label style={styles.fieldLabel}>Tujuan</label>
+        <div style={styles.lokasiGrid}>
+          <button onClick={() => setTujuanTipe('lokasi')} style={{ ...styles.lokasiChip, ...(tujuanTipe === 'lokasi' ? styles.lokasiChipActive : {}) }}>Titik jual sendiri</button>
+          <button onClick={() => setTujuanTipe('reseller')} style={{ ...styles.lokasiChip, ...(tujuanTipe === 'reseller' ? styles.lokasiChipActive : {}) }}>Reseller</button>
+        </div>
+
+        {tujuanTipe === 'lokasi' ? (
+          <div style={styles.lokasiGrid}>
+            {LOKASI_OPTIONS.map((l) => (
+              <button key={l} onClick={() => setTujuanNama(l)} style={{ ...styles.lokasiChip, ...(tujuanNama === l ? styles.lokasiChipActive : {}) }}>{l}</button>
+            ))}
+          </div>
+        ) : resellerAktif.length === 0 ? (
+          <div style={styles.varianEmptyRow}>Belum ada reseller aktif. Tambahkan dulu di tab Kelola.</div>
+        ) : (
+          <div style={styles.lokasiGrid}>
+            {resellerAktif.map((r) => (
+              <button key={r.id} onClick={() => setResellerId(r.id)} style={{ ...styles.lokasiChip, ...(resellerId === r.id ? styles.lokasiChipActive : {}) }}>{r.nama}</button>
+            ))}
+          </div>
+        )}
+
+        <label style={{ ...styles.fieldLabel, marginTop: 8 }}>Tambah varian yang dibawa</label>
+        <div style={styles.addRow}>
+          <select
+            style={{ ...styles.input, marginBottom: 0, flex: 1.2 }}
+            value={pickJenis}
+            onChange={(e) => { setPickJenis(e.target.value); const j = jenisList.find((jj) => jj.id === e.target.value); setPickVarian(j?.varian[0]?.nama || ''); }}
+          >
+            {jenisList.map((j) => <option key={j.id} value={j.id}>{j.nama}</option>)}
+          </select>
+        </div>
+        <div style={styles.addRow}>
+          <select style={{ ...styles.input, marginBottom: 0, flex: 1.2 }} value={pickVarian} onChange={(e) => setPickVarian(e.target.value)}>
+            {(jenisAktif?.varian || []).map((v) => {
+              const key = pickJenis + '||' + v.nama;
+              const sisa = stokMap[key] || 0;
+              return <option key={v.nama} value={v.nama}>{v.nama} (sisa {sisa})</option>;
+            })}
+          </select>
+          <input
+            type="number" inputMode="numeric" placeholder="Jml"
+            style={{ ...styles.input, marginBottom: 0, flex: 0.6 }}
+            value={pickJumlah}
+            onChange={(e) => setPickJumlah(e.target.value)}
+          />
+          <button style={styles.addBtnSmall} onClick={tambahItem}><Plus size={15} /></button>
+        </div>
+
+        {items.length > 0 && (
+          <div style={{ marginBottom: 16 }}>
+            {items.map((it, idx) => (
+              <div key={idx} style={styles.kelolaVarianRow}>
+                <div style={styles.kelolaVarianNama}>{jenisList.find((j) => j.id === it.jenisId)?.nama} - {it.varian}</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#3A2618' }}>{it.jumlah} pcs</div>
+                <button style={styles.deleteBtnSmall} onClick={() => hapusItem(idx)}><X size={13} /></button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <button style={{ ...styles.submitBtn, background: '#3A2618', opacity: items.length > 0 ? 1 : 0.5 }} onClick={submit} disabled={items.length === 0}>
+          Mulai Distribusi ({items.reduce((a, i) => a + i.jumlah, 0)} pcs)
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function DetailDistribusiModal({ d, jenisList, countingList, onClose, onTambahCounting, onHapusCounting, onTutup }) {
+  const jenisNama = (id) => jenisList.find((j) => j.id === id)?.nama || id;
+  const isBerjalan = d.status === 'berjalan';
+  const [showTutup, setShowTutup] = useState(false);
+  const [returVal, setReturVal] = useState(() => Object.fromEntries(d.items.map((it) => [it.id, it.jumlahRetur])));
+  const [countJenis, setCountJenis] = useState(d.items[0]?.jenisId || '');
+  const [countJumlah, setCountJumlah] = useState('');
+  const [countMetode, setCountMetode] = useState('Cash');
+
+  const totalCountingByJenis = {};
+  for (const c of countingList) totalCountingByJenis[c.jenisId] = (totalCountingByJenis[c.jenisId] || 0) + c.jumlah;
+  const totalDibawaByJenis = {};
+  for (const it of d.items) totalDibawaByJenis[it.jenisId] = (totalDibawaByJenis[it.jenisId] || 0) + it.jumlahDibawa;
+
+  const submitCounting = () => {
+    const n = parseInt(countJumlah, 10);
+    if (!n || n <= 0) return;
+    onTambahCounting(d.id, countJenis, n, countMetode);
+    setCountJumlah('');
+  };
+
+  const totalDibawa = d.items.reduce((a, it) => a + it.jumlahDibawa, 0);
+  const totalReturInput = Object.values(returVal).reduce((a, v) => a + (parseInt(v, 10) || 0), 0);
+  const totalTerjualEstimasi = totalDibawa - totalReturInput;
+  const totalCountingSemua = countingList.reduce((a, c) => a + c.jumlah, 0);
+  const selisih = totalTerjualEstimasi - totalCountingSemua;
+
+  return (
+    <div style={styles.overlay} onClick={onClose}>
+      <div style={{ ...styles.modal, maxHeight: '85vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalHeader}>
+          <div>
+            <div style={styles.modalTitle}>{d.tujuanNama}</div>
+            <div style={styles.modalSub}>{isBerjalan ? 'Distribusi berjalan' : 'Sudah ditutup'}</div>
+          </div>
+          <button style={styles.closeBtn} onClick={onClose}><X size={18} /></button>
+        </div>
+
+        <div style={styles.sectionLabel}>Dibawa</div>
+        {d.items.map((it) => (
+          <div key={it.id} style={styles.kelolaVarianRow}>
+            <div style={styles.kelolaVarianNama}>{jenisNama(it.jenisId)} - {it.varian}</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#3A2618' }}>{it.jumlahDibawa} pcs</div>
+          </div>
+        ))}
+
+        {d.tujuanTipe === 'lokasi' && isBerjalan && (
+          <>
+            <div style={{ ...styles.sectionLabel, marginTop: 14 }}>Catat penjualan (opsional)</div>
+            <div style={styles.addRow}>
+              <select style={{ ...styles.input, marginBottom: 0, flex: 1 }} value={countJenis} onChange={(e) => setCountJenis(e.target.value)}>
+                {[...new Set(d.items.map((it) => it.jenisId))].map((jid) => <option key={jid} value={jid}>{jenisNama(jid)}</option>)}
+              </select>
+              <input type="number" inputMode="numeric" placeholder="Jml" style={{ ...styles.input, marginBottom: 0, flex: 0.5 }} value={countJumlah} onChange={(e) => setCountJumlah(e.target.value)} />
+            </div>
+            <div style={{ ...styles.lokasiGrid, marginBottom: 10 }}>
+              <button onClick={() => setCountMetode('Cash')} style={{ ...styles.lokasiChip, ...(countMetode === 'Cash' ? styles.lokasiChipActive : {}) }}><Banknote size={13} style={{ marginRight: 4, verticalAlign: -2 }} />Cash</button>
+              <button onClick={() => setCountMetode('QRIS')} style={{ ...styles.lokasiChip, ...(countMetode === 'QRIS' ? styles.lokasiChipActive : {}) }}><QrCode size={13} style={{ marginRight: 4, verticalAlign: -2 }} />QRIS</button>
+              <button style={{ ...styles.addBtnSmall, width: 44 }} onClick={submitCounting}><Plus size={15} /></button>
+            </div>
+
+            {countingList.length > 0 && (
+              <div style={{ marginBottom: 10 }}>
+                {countingList.map((c) => (
+                  <div key={c.id} style={styles.kelolaVarianRow}>
+                    <div style={styles.kelolaVarianNama}>{jenisNama(c.jenisId)} · {c.metodeBayar} {c.dicatatOleh ? `· ${c.dicatatOleh}` : ''}</div>
+                    <div style={{ fontSize: 13, fontWeight: 700 }}>{c.jumlah} pcs</div>
+                    <button style={styles.deleteBtnSmall} onClick={() => onHapusCounting(c.id)}><X size={13} /></button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {isBerjalan && !showTutup && (
+          <button style={{ ...styles.submitBtn, background: '#C0392B', marginTop: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }} onClick={() => setShowTutup(true)}>
+            <RotateCcw size={16} /> Tutup & Catat Retur
+          </button>
+        )}
+
+        {isBerjalan && showTutup && (
+          <>
+            <div style={{ ...styles.sectionLabel, marginTop: 14 }}>Jumlah sisa (retur) per varian</div>
+            {d.items.map((it) => (
+              <div key={it.id} style={styles.kelolaVarianRow}>
+                <div style={styles.kelolaVarianNama}>{jenisNama(it.jenisId)} - {it.varian} <span style={{ color: '#B08968' }}>(dibawa {it.jumlahDibawa})</span></div>
+                <input
+                  type="number" inputMode="numeric"
+                  style={{ width: 56, padding: '6px 8px', borderRadius: 8, border: '1px solid #EFDFC8', fontSize: 13 }}
+                  value={returVal[it.id]}
+                  onChange={(e) => setReturVal((s) => ({ ...s, [it.id]: e.target.value }))}
+                />
+              </div>
+            ))}
+
+            <div style={styles.untungCard}>
+              <div style={styles.untungRow}><span>Total terjual (estimasi)</span><strong>{totalTerjualEstimasi} pcs</strong></div>
+              {totalCountingSemua > 0 && (
+                <>
+                  <div style={styles.untungRow}><span>Total counting tercatat</span><strong>{totalCountingSemua} pcs</strong></div>
+                  {selisih !== 0 && (
+                    <div style={{ ...styles.untungRow, color: '#C0392B' }}>
+                      <span><AlertTriangle size={13} style={{ marginRight: 4, verticalAlign: -2 }} />Ada selisih</span>
+                      <strong>{selisih > 0 ? '+' : ''}{selisih} pcs</strong>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            <button
+              style={{ ...styles.submitBtn, background: '#2E7D5B', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+              onClick={() => onTutup(Object.fromEntries(Object.entries(returVal).map(([k, v]) => [k, parseInt(v, 10) || 0])))}
+            >
+              <CheckCircle2 size={16} /> Konfirmasi & Kembalikan ke Stok
+            </button>
+          </>
+        )}
+
+        {!isBerjalan && (
+          <>
+            <div style={{ ...styles.sectionLabel, marginTop: 14 }}>Retur & Terjual</div>
+            {d.items.map((it) => (
+              <div key={it.id} style={styles.kelolaVarianRow}>
+                <div style={styles.kelolaVarianNama}>{jenisNama(it.jenisId)} - {it.varian}</div>
+                <div style={{ fontSize: 12, color: '#B08968' }}>Retur {it.jumlahRetur} · Terjual {it.jumlahDibawa - it.jumlahRetur}</div>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -894,6 +1789,10 @@ const styles = {
   logoutBtn: {
     width: 34, height: 34, borderRadius: '50%', background: '#F0E4D4', color: '#8A6D4E',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
+  },
+  namaBtn: {
+    display: 'flex', alignItems: 'center', gap: 5, background: '#F0E4D4', color: '#8A6D4E',
+    borderRadius: 16, padding: '6px 10px', fontSize: 11.5, fontWeight: 600, marginRight: 6, whiteSpace: 'nowrap',
   },
   tabBar: { display: 'flex', gap: 5, padding: '0 14px', marginBottom: 8 },
   tabBtn: {
@@ -986,4 +1885,13 @@ const styles = {
   hargaEditWrap: { display: 'flex', alignItems: 'center', background: '#FFF8F0', borderRadius: 8, border: '1px solid #EFDFC8', padding: '4px 8px' },
   hargaPrefix: { fontSize: 12, color: '#B08968', marginRight: 2 },
   hargaEditInput: { width: 56, border: 'none', background: 'transparent', fontSize: 13, color: '#3A2618', fontWeight: 600, padding: 2 },
+  distCard: {
+    display: 'block', width: '100%', textAlign: 'left', background: '#fff', borderRadius: 14, padding: '12px 14px',
+    marginBottom: 8, boxShadow: '0 1px 3px rgba(58,38,24,0.06)',
+  },
+  distCardHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
+  distCardTujuan: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 14, fontWeight: 700, color: '#3A2618' },
+  distBadge: { fontSize: 10.5, fontWeight: 700, padding: '3px 9px', borderRadius: 10 },
+  distCardMeta: { fontSize: 11.5, color: '#B08968', marginBottom: 4 },
+  distCardItems: { fontSize: 11.5, color: '#8A6D4E', lineHeight: 1.5 },
 };
