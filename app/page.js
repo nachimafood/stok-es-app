@@ -26,6 +26,53 @@ function formatRupiah(n) {
   return 'Rp' + n.toLocaleString('id-ID');
 }
 
+// Hitung pendapatan dari distribusi titik jual sendiri (bukan reseller) yang sudah selesai.
+// Reseller sengaja TIDAK dihitung ke sini karena skema harga ke reseller beda & belum pasti.
+function hitungPendapatanDistribusi(distribusiList, countingList) {
+  const perDistribusi = [];
+  for (const d of distribusiList) {
+    if (d.tujuanTipe !== 'lokasi' || d.status !== 'selesai') continue;
+
+    // Kelompokkan item per jenis untuk hitung rata-rata harga & terjual per jenis
+    const jenisMap = {}; // jenisId -> { totalTerjual, totalRevenue }
+    for (const it of d.items) {
+      const terjual = it.jumlahDibawa - it.jumlahRetur;
+      if (!jenisMap[it.jenisId]) jenisMap[it.jenisId] = { totalTerjual: 0, totalRevenue: 0 };
+      jenisMap[it.jenisId].totalTerjual += terjual;
+      jenisMap[it.jenisId].totalRevenue += terjual * (it.hargaSatuan || 0);
+    }
+
+    let cash = 0, qris = 0, tidakTercatat = 0, totalPendapatan = 0;
+    const countingIni = countingList.filter((c) => c.distribusiId === d.id);
+
+    for (const [jenisId, info] of Object.entries(jenisMap)) {
+      totalPendapatan += info.totalRevenue;
+      const avgHarga = info.totalTerjual > 0 ? info.totalRevenue / info.totalTerjual : 0;
+      const countingJenis = countingIni.filter((c) => c.jenisId === jenisId);
+      let pcsTercatat = 0;
+      for (const c of countingJenis) {
+        const rp = c.jumlah * avgHarga;
+        if (c.metodeBayar === 'QRIS') qris += rp; else cash += rp;
+        pcsTercatat += c.jumlah;
+      }
+      const sisaPcs = Math.max(0, info.totalTerjual - pcsTercatat);
+      tidakTercatat += sisaPcs * avgHarga;
+    }
+
+    perDistribusi.push({
+      id: d.id, tujuanNama: d.tujuanNama, waktu: d.waktuSelesai,
+      totalPendapatan, cash, qris, tidakTercatat,
+    });
+  }
+  const grand = perDistribusi.reduce((acc, x) => ({
+    totalPendapatan: acc.totalPendapatan + x.totalPendapatan,
+    cash: acc.cash + x.cash,
+    qris: acc.qris + x.qris,
+    tidakTercatat: acc.tidakTercatat + x.tidakTercatat,
+  }), { totalPendapatan: 0, cash: 0, qris: 0, tidakTercatat: 0 });
+  return { perDistribusi, ...grand };
+}
+
 // ============ APP ROOT: login gate ============
 export default function StokEsApp() {
   const [teamCode, setTeamCode] = useState('');
@@ -274,6 +321,7 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
               varian: it.varian_nama,
               jumlahDibawa: it.jumlah_dibawa,
               jumlahRetur: it.jumlah_retur || 0,
+              hargaSatuan: it.harga_satuan || 0,
             })),
         }))
       );
@@ -365,12 +413,12 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
     };
     const itemRows = items.map((it) => ({
       id: uid(), distribusi_id: distId, jenis_id: it.jenisId, varian_nama: it.varian,
-      jumlah_dibawa: it.jumlah, jumlah_retur: 0, team_code: teamCode,
+      jumlah_dibawa: it.jumlah, jumlah_retur: 0, harga_satuan: it.harga || 0, team_code: teamCode,
     }));
     setDistribusiList((prev) => [{
       id: distId, tujuanTipe, tujuanNama, resellerId, status: 'berjalan', waktuMulai: distRow.waktu_mulai,
       waktuSelesai: null, dicatatOleh: nama,
-      items: itemRows.map((r) => ({ id: r.id, jenisId: r.jenis_id, varian: r.varian_nama, jumlahDibawa: r.jumlah_dibawa, jumlahRetur: 0 })),
+      items: itemRows.map((r) => ({ id: r.id, jenisId: r.jenis_id, varian: r.varian_nama, jumlahDibawa: r.jumlah_dibawa, jumlahRetur: 0, hargaSatuan: r.harga_satuan })),
     }, ...prev]);
     const { error: e1 } = await supabase.from('distribusi').insert(distRow);
     const { error: e2 } = await supabase.from('distribusi_item').insert(itemRows);
@@ -515,7 +563,7 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
             onTutup={tutupDistribusi}
           />
         )}
-        {tab === 'pendapatan' && <PendapatanView transaksi={transaksi} pengeluaran={pengeluaran} />}
+        {tab === 'pendapatan' && <PendapatanView transaksi={transaksi} pengeluaran={pengeluaran} distribusiList={distribusiList} countingList={countingList} />}
         {tab === 'pengeluaran' && (
           <PengeluaranView pengeluaran={pengeluaran} onTambah={tambahPengeluaran} onHapus={hapusPengeluaran} />
         )}
@@ -778,7 +826,7 @@ function TransaksiModal({ info, onClose, onSubmit }) {
 }
 
 // ============ PENDAPATAN VIEW ============
-function PendapatanView({ transaksi, pengeluaran }) {
+function PendapatanView({ transaksi, pengeluaran, distribusiList, countingList }) {
   const keluar = useMemo(() => transaksi.filter((t) => t.tipe === 'keluar'), [transaksi]);
 
   const now = new Date();
@@ -788,7 +836,18 @@ function PendapatanView({ transaksi, pengeluaran }) {
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
   const startOfYear = new Date(now.getFullYear(), 0, 1).getTime();
 
-  const sumSince = (ts) => keluar.filter((t) => t.waktu >= ts).reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0);
+  const distSelesai = useMemo(
+    () => distribusiList.filter((d) => d.tujuanTipe === 'lokasi' && d.status === 'selesai'),
+    [distribusiList]
+  );
+
+  const sumLangsungSince = (ts) => keluar.filter((t) => t.waktu >= ts).reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0);
+  const sumDistribusiSince = (ts) => {
+    const filtered = { ...Object.fromEntries(distSelesai.filter((d) => d.waktuSelesai >= ts).map((d) => [d.id, d])) };
+    const list = Object.values(filtered);
+    return hitungPendapatanDistribusi(list, countingList).totalPendapatan;
+  };
+  const sumSince = (ts) => sumLangsungSince(ts) + sumDistribusiSince(ts);
   const sumPengeluaranSince = (ts) => pengeluaran.filter((p) => p.waktu >= ts).reduce((a, p) => a + p.jumlah, 0);
 
   const harian = sumSince(startOfDay);
@@ -796,7 +855,6 @@ function PendapatanView({ transaksi, pengeluaran }) {
   const bulanan = sumSince(startOfMonth);
   const tahunan = sumSince(startOfYear);
 
-  const pengeluaranHarian = sumPengeluaranSince(startOfDay);
   const pengeluaranBulanan = sumPengeluaranSince(startOfMonth);
 
   const perLokasi = useMemo(() => {
@@ -805,14 +863,21 @@ function PendapatanView({ transaksi, pengeluaran }) {
       const loc = t.lokasi || 'Tanpa lokasi';
       map[loc] = (map[loc] || 0) + t.jumlah * (t.hargaSatuan || 0);
     }
+    const distInfo = hitungPendapatanDistribusi(distSelesai, countingList);
+    for (const pd of distInfo.perDistribusi) {
+      map[pd.tujuanNama] = (map[pd.tujuanNama] || 0) + pd.totalPendapatan;
+    }
     return Object.entries(map).sort((a, b) => b[1] - a[1]);
-  }, [keluar]);
+  }, [keluar, distSelesai, countingList]);
 
-  const totalCash = useMemo(() => keluar.filter((t) => t.metodeBayar === 'Cash').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0), [keluar]);
-  const totalQris = useMemo(() => keluar.filter((t) => t.metodeBayar === 'QRIS').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0), [keluar]);
+  const distInfoAll = useMemo(() => hitungPendapatanDistribusi(distSelesai, countingList), [distSelesai, countingList]);
 
-  if (keluar.length === 0) {
-    return <EmptyState text="Belum ada penjualan tercatat. Pendapatan akan muncul setelah ada stok keluar." />;
+  const totalCash = useMemo(() => keluar.filter((t) => t.metodeBayar === 'Cash').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0), [keluar]) + distInfoAll.cash;
+  const totalQris = useMemo(() => keluar.filter((t) => t.metodeBayar === 'QRIS').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0), [keluar]) + distInfoAll.qris;
+  const totalTidakTercatat = distInfoAll.tidakTercatat;
+
+  if (keluar.length === 0 && distSelesai.length === 0) {
+    return <EmptyState text="Belum ada penjualan tercatat. Pendapatan akan muncul setelah ada stok keluar atau distribusi selesai." />;
   }
 
   return (
@@ -839,7 +904,7 @@ function PendapatanView({ transaksi, pengeluaran }) {
         </div>
       </div>
 
-      {(totalCash > 0 || totalQris > 0) && (
+      {(totalCash > 0 || totalQris > 0 || totalTidakTercatat > 0) && (
         <>
           <div style={styles.sectionLabel}>Total berdasarkan metode bayar</div>
           <div style={styles.lokasiRevRow}>
@@ -850,6 +915,12 @@ function PendapatanView({ transaksi, pengeluaran }) {
             <div style={styles.lokasiRevName}><QrCode size={13} style={{ marginRight: 4, verticalAlign: -2 }} />QRIS</div>
             <div style={styles.lokasiRevValue}>{formatRupiah(totalQris)}</div>
           </div>
+          {totalTidakTercatat > 0 && (
+            <div style={styles.lokasiRevRow}>
+              <div style={styles.lokasiRevName}><AlertTriangle size={13} style={{ marginRight: 4, verticalAlign: -2, color: '#C0862E' }} />Metode tidak tercatat (dari distribusi)</div>
+              <div style={{ ...styles.lokasiRevValue, color: '#C0862E' }}>{formatRupiah(totalTidakTercatat)}</div>
+            </div>
+          )}
         </>
       )}
 
@@ -860,6 +931,7 @@ function PendapatanView({ transaksi, pengeluaran }) {
           <div style={styles.lokasiRevValue}>{formatRupiah(total)}</div>
         </div>
       ))}
+
     </div>
   );
 }
@@ -1113,7 +1185,12 @@ function KelolaView({ jenisList, onTambahJenis, onHapusJenis, onTambahVarian, on
         resellerList.map((r) => (
           <div key={r.id} style={styles.kelolaJenisCard}>
             <div style={styles.kelolaJenisHeader}>
-              <div style={{ ...styles.jenisTitle, opacity: r.aktif ? 1 : 0.5 }}>{r.nama}{!r.aktif ? ' (nonaktif)' : ''}</div>
+              <input
+                style={{ ...styles.namaResellerInput, opacity: r.aktif ? 1 : 0.5 }}
+                defaultValue={r.nama}
+                onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== r.nama) onUpdateReseller(r.id, { nama: v }); }}
+              />
+              {!r.aktif && <span style={{ fontSize: 11, color: '#B08968', marginRight: 6 }}>(nonaktif)</span>}
               <button
                 style={{ ...styles.deleteBtnSmall, color: r.aktif ? '#C0392B' : '#2E7D5B' }}
                 onClick={() => onUpdateReseller(r.id, { aktif: !r.aktif })}
@@ -1200,8 +1277,15 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
 
   const totalMasuk = filteredTransaksi.filter((t) => t.tipe === 'masuk').reduce((a, t) => a + t.jumlah, 0);
   const totalKeluarPcs = filteredTransaksi.filter((t) => t.tipe === 'keluar').reduce((a, t) => a + t.jumlah, 0);
-  const totalPendapatan = filteredTransaksi.filter((t) => t.tipe === 'keluar').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0);
+  const totalPendapatanLangsung = filteredTransaksi.filter((t) => t.tipe === 'keluar').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0);
   const totalPengeluaran = filteredPengeluaran.reduce((a, p) => a + p.jumlah, 0);
+
+  const distSelesaiLokasiRange = useMemo(
+    () => (distribusiList || []).filter((d) => d.tujuanTipe === 'lokasi' && d.status === 'selesai' && d.waktuSelesai >= range.start && d.waktuSelesai < range.end),
+    [distribusiList, range]
+  );
+  const distInfoRange = useMemo(() => hitungPendapatanDistribusi(distSelesaiLokasiRange, countingList), [distSelesaiLokasiRange, countingList]);
+  const totalPendapatan = totalPendapatanLangsung + distInfoRange.totalPendapatan;
   const untungBersih = totalPendapatan - totalPengeluaran;
 
   const filteredDistribusi = useMemo(
@@ -1214,7 +1298,7 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
     rows.push(['Laporan Stok Es']);
     rows.push(['Periode', range.label]);
     rows.push([]);
-    rows.push(['=== TRANSAKSI ===']);
+    rows.push(['=== PENJUALAN LANGSUNG (input manual di tab Stok) ===']);
     rows.push(['Tanggal', 'Jenis', 'Varian', 'Tipe', 'Jumlah', 'Harga Satuan', 'Total', 'Titik Jual', 'Metode Bayar', 'Dicatat Oleh']);
     filteredTransaksi.forEach((t) => {
       rows.push([
@@ -1237,14 +1321,32 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
       rows.push([new Date(p.waktu).toLocaleString('id-ID'), p.deskripsi, p.jumlah, p.dicatatOleh || '']);
     });
     rows.push([]);
-    rows.push(['=== DISTRIBUSI & RESELLER ===']);
-    rows.push(['Tanggal Mulai', 'Tujuan', 'Tipe', 'Status', 'Varian', 'Dibawa', 'Retur', 'Terjual', 'Dicatat Oleh']);
-    filteredDistribusi.forEach((d) => {
+    rows.push(['=== DISTRIBUSI TITIK JUAL SENDIRI (ikut masuk ke Total Pendapatan) ===']);
+    rows.push(['Tanggal Selesai', 'Tujuan', 'Status', 'Varian', 'Dibawa', 'Retur', 'Terjual', 'Est. Pendapatan', 'Dicatat Oleh']);
+    filteredDistribusi.filter((d) => d.tujuanTipe === 'lokasi').forEach((d) => {
+      d.items.forEach((it) => {
+        const terjual = it.jumlahDibawa - it.jumlahRetur;
+        rows.push([
+          d.waktuSelesai ? new Date(d.waktuSelesai).toLocaleString('id-ID') : '(belum selesai)',
+          d.tujuanNama,
+          d.status,
+          `${jenisNama(it.jenisId)} - ${it.varian}`,
+          it.jumlahDibawa,
+          it.jumlahRetur,
+          terjual,
+          terjual * (it.hargaSatuan || 0),
+          d.dicatatOleh || '',
+        ]);
+      });
+    });
+    rows.push([]);
+    rows.push(['=== DISTRIBUSI RESELLER (TIDAK dihitung ke Total Pendapatan - harga ke reseller beda) ===']);
+    rows.push(['Tanggal Selesai', 'Nama Reseller', 'Status', 'Varian', 'Dibawa', 'Retur', 'Terjual', 'Dicatat Oleh']);
+    filteredDistribusi.filter((d) => d.tujuanTipe === 'reseller').forEach((d) => {
       d.items.forEach((it) => {
         rows.push([
-          new Date(d.waktuMulai).toLocaleString('id-ID'),
+          d.waktuSelesai ? new Date(d.waktuSelesai).toLocaleString('id-ID') : '(belum selesai)',
           d.tujuanNama,
-          d.tujuanTipe === 'reseller' ? 'Reseller' : 'Titik Jual',
           d.status,
           `${jenisNama(it.jenisId)} - ${it.varian}`,
           it.jumlahDibawa,
@@ -1256,7 +1358,7 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
     });
     rows.push([]);
     rows.push(['=== RINGKASAN ===']);
-    rows.push(['Total pendapatan', totalPendapatan]);
+    rows.push(['Total pendapatan (langsung + distribusi titik jual)', totalPendapatan]);
     rows.push(['Total pengeluaran', totalPengeluaran]);
     rows.push(['Untung bersih', untungBersih]);
 
@@ -1284,18 +1386,22 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
       startY: 28,
       head: [['Ringkasan', 'Nilai']],
       body: [
-        ['Total pendapatan', formatRupiah(totalPendapatan)],
+        ['Total pendapatan (langsung + distribusi titik jual)', formatRupiah(totalPendapatan)],
         ['Total pengeluaran', formatRupiah(totalPengeluaran)],
         ['Untung bersih', formatRupiah(untungBersih)],
         ['Total pcs masuk', String(totalMasuk)],
-        ['Total pcs terjual', String(totalKeluarPcs)],
+        ['Total pcs terjual (langsung)', String(totalKeluarPcs)],
       ],
       theme: 'grid',
       headStyles: { fillColor: [240, 160, 75] },
     });
 
+    let y = doc.lastAutoTable.finalY + 10;
+    doc.setFontSize(9);
+    doc.setTextColor(58, 38, 24);
+    doc.text('Penjualan Langsung (input manual di tab Stok)', 14, y);
     autoTable(doc, {
-      startY: doc.lastAutoTable.finalY + 10,
+      startY: y + 4,
       head: [['Tanggal', 'Produk', 'Tipe', 'Jml', 'Total', 'Lokasi/Bayar', 'Oleh']],
       body: filteredTransaksi.map((t) => [
         new Date(t.waktu).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }),
@@ -1312,8 +1418,12 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
     });
 
     if (filteredPengeluaran.length > 0) {
+      y = doc.lastAutoTable.finalY + 10;
+      doc.setFontSize(9);
+      doc.setTextColor(192, 57, 43);
+      doc.text('Pengeluaran', 14, y);
       autoTable(doc, {
-        startY: doc.lastAutoTable.finalY + 10,
+        startY: y + 4,
         head: [['Tanggal', 'Keterangan', 'Jumlah', 'Oleh']],
         body: filteredPengeluaran.map((p) => [
           new Date(p.waktu).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }),
@@ -1327,14 +1437,45 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
       });
     }
 
-    if (filteredDistribusi.length > 0) {
+    const distLokasi = filteredDistribusi.filter((d) => d.tujuanTipe === 'lokasi');
+    if (distLokasi.length > 0) {
       const distRows = [];
-      filteredDistribusi.forEach((d) => {
+      distLokasi.forEach((d) => {
         d.items.forEach((it) => {
+          const terjual = it.jumlahDibawa - it.jumlahRetur;
           distRows.push([
-            new Date(d.waktuMulai).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }),
+            d.waktuSelesai ? new Date(d.waktuSelesai).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }) : 'Berjalan',
             d.tujuanNama,
-            d.tujuanTipe === 'reseller' ? 'Reseller' : 'Titik Jual',
+            `${jenisNama(it.jenisId)} - ${it.varian}`,
+            it.jumlahDibawa,
+            it.jumlahRetur,
+            terjual,
+            formatRupiah(terjual * (it.hargaSatuan || 0)),
+          ]);
+        });
+      });
+      y = doc.lastAutoTable.finalY + 10;
+      doc.setFontSize(9);
+      doc.setTextColor(46, 125, 91);
+      doc.text('Distribusi Titik Jual Sendiri (nilai ini IKUT masuk ke Total Pendapatan)', 14, y);
+      autoTable(doc, {
+        startY: y + 4,
+        head: [['Tanggal', 'Tujuan', 'Varian', 'Dibawa', 'Retur', 'Terjual', 'Est. Pendapatan']],
+        body: distRows,
+        theme: 'striped',
+        headStyles: { fillColor: [46, 125, 91] },
+        styles: { fontSize: 8 },
+      });
+    }
+
+    const distReseller = filteredDistribusi.filter((d) => d.tujuanTipe === 'reseller');
+    if (distReseller.length > 0) {
+      const resRows = [];
+      distReseller.forEach((d) => {
+        d.items.forEach((it) => {
+          resRows.push([
+            d.waktuSelesai ? new Date(d.waktuSelesai).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }) : 'Berjalan',
+            d.tujuanNama,
             `${jenisNama(it.jenisId)} - ${it.varian}`,
             it.jumlahDibawa,
             it.jumlahRetur,
@@ -1342,12 +1483,16 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
           ]);
         });
       });
+      y = doc.lastAutoTable.finalY + 10;
+      doc.setFontSize(9);
+      doc.setTextColor(138, 90, 43);
+      doc.text('Distribusi Reseller (TIDAK dihitung ke Total Pendapatan)', 14, y);
       autoTable(doc, {
-        startY: doc.lastAutoTable.finalY + 10,
-        head: [['Tanggal', 'Tujuan', 'Tipe', 'Varian', 'Dibawa', 'Retur', 'Terjual']],
-        body: distRows,
+        startY: y + 4,
+        head: [['Tanggal', 'Reseller', 'Varian', 'Dibawa', 'Retur', 'Terjual']],
+        body: resRows,
         theme: 'striped',
-        headStyles: { fillColor: [46, 125, 91] },
+        headStyles: { fillColor: [138, 90, 43] },
         styles: { fontSize: 8 },
       });
     }
@@ -1519,7 +1664,8 @@ function MulaiDistribusiModal({ jenisList, stokMap, resellerAktif, onClose, onSu
   const tambahItem = () => {
     const n = parseInt(pickJumlah, 10);
     if (!n || n <= 0 || !pickVarian) return;
-    setItems((prev) => [...prev, { jenisId: pickJenis, varian: pickVarian, jumlah: n }]);
+    const hargaVarian = jenisAktif?.varian.find((v) => v.nama === pickVarian)?.harga || 0;
+    setItems((prev) => [...prev, { jenisId: pickJenis, varian: pickVarian, jumlah: n, harga: hargaVarian }]);
     setPickJumlah('');
   };
 
@@ -1894,4 +2040,8 @@ const styles = {
   distBadge: { fontSize: 10.5, fontWeight: 700, padding: '3px 9px', borderRadius: 10 },
   distCardMeta: { fontSize: 11.5, color: '#B08968', marginBottom: 4 },
   distCardItems: { fontSize: 11.5, color: '#8A6D4E', lineHeight: 1.5 },
+  namaResellerInput: {
+    flex: 1, fontSize: 15, fontWeight: 700, color: '#3A2618', border: 'none', background: 'transparent', padding: '4px 0',
+  },
+  footer: { textAlign: 'center', fontSize: 10.5, color: '#D9C4A8', padding: '10px 16px 4px' },
 };
