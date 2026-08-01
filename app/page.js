@@ -53,31 +53,18 @@ function hitungPendapatanDistribusi(distribusiList, countingList) {
   for (const d of distribusiList) {
     if (d.tujuanTipe !== 'lokasi' || d.status !== 'selesai') continue;
 
-    // Kelompokkan item per jenis untuk hitung rata-rata harga & terjual per jenis
-    const jenisMap = {}; // jenisId -> { totalTerjual, totalRevenue }
-    for (const it of d.items) {
-      const terjual = it.jumlahDibawa - it.jumlahRetur;
-      if (!jenisMap[it.jenisId]) jenisMap[it.jenisId] = { totalTerjual: 0, totalRevenue: 0 };
-      jenisMap[it.jenisId].totalTerjual += terjual;
-      jenisMap[it.jenisId].totalRevenue += terjual * (it.hargaSatuan || 0);
-    }
+    // Total pendapatan = jumlah terjual (dibawa-retur) × harga snapshot per varian — ini angka pasti (ground truth)
+    const totalPendapatan = d.items.reduce((a, it) => a + (it.jumlahDibawa - it.jumlahRetur) * (it.hargaSatuan || 0), 0);
 
-    let cash = 0, qris = 0, tidakTercatat = 0, totalPendapatan = 0;
+    // Cash/QRIS = dari counting (uang yang dicatat tim saat jualan), sisanya (kalau ada) masuk "tidak tercatat"
     const countingIni = countingList.filter((c) => c.distribusiId === d.id);
-
-    for (const [jenisId, info] of Object.entries(jenisMap)) {
-      totalPendapatan += info.totalRevenue;
-      const avgHarga = info.totalTerjual > 0 ? info.totalRevenue / info.totalTerjual : 0;
-      const countingJenis = countingIni.filter((c) => c.jenisId === jenisId);
-      let pcsTercatat = 0;
-      for (const c of countingJenis) {
-        const rp = c.jumlah * avgHarga;
-        if (c.metodeBayar === 'QRIS') qris += rp; else cash += rp;
-        pcsTercatat += c.jumlah;
-      }
-      const sisaPcs = Math.max(0, info.totalTerjual - pcsTercatat);
-      tidakTercatat += sisaPcs * avgHarga;
+    let cash = 0, qris = 0;
+    for (const c of countingIni) {
+      const rp = c.jumlahRupiah || 0;
+      if (c.metodeBayar === 'QRIS') qris += rp; else cash += rp;
     }
+    const totalCounting = cash + qris;
+    const tidakTercatat = Math.max(0, totalPendapatan - totalCounting);
 
     perDistribusi.push({
       id: d.id, tujuanNama: d.tujuanNama, waktu: d.waktuSelesai,
@@ -197,6 +184,7 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
   const [pengeluaran, setPengeluaran] = useState(null);
   const [resellerList, setResellerList] = useState(null);
   const [outletList, setOutletList] = useState(null);
+  const [kategoriList, setKategoriList] = useState(null);
   const [distribusiList, setDistribusiList] = useState(null);
   const [countingList, setCountingList] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -221,10 +209,10 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
   const loadData = useCallback(async () => {
     setLoading(true);
     setLoadFailMsg('');
-    let jenisRows, varianRows, transRows, pengeluaranRows, resellerRows, distRows, distItemRows, countingRows, outletRows;
+    let jenisRows, varianRows, transRows, pengeluaranRows, resellerRows, distRows, distItemRows, countingRows, outletRows, kategoriRows;
     try {
-      const r1 = await supabase.from('jenis_es').select('*').eq('team_code', teamCode);
-      const r2 = await supabase.from('varian_es').select('*').eq('team_code', teamCode);
+      const r1 = await supabase.from('jenis_es').select('*').eq('team_code', teamCode).order('id', { ascending: true });
+      const r2 = await supabase.from('varian_es').select('*').eq('team_code', teamCode).order('id', { ascending: true });
       const r3 = await supabase.from('transaksi').select('*').eq('team_code', teamCode).order('waktu', { ascending: false });
       const r4 = await supabase.from('pengeluaran').select('*').eq('team_code', teamCode).order('waktu', { ascending: false });
       const r5 = await supabase.from('reseller').select('*').eq('team_code', teamCode);
@@ -232,8 +220,9 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
       const r7 = await supabase.from('distribusi_item').select('*').eq('team_code', teamCode);
       const r8 = await supabase.from('counting').select('*').eq('team_code', teamCode).order('waktu', { ascending: false });
       const r9 = await supabase.from('outlet').select('*').eq('team_code', teamCode);
+      const r10 = await supabase.from('kategori_varian').select('*').eq('team_code', teamCode).order('id', { ascending: true });
 
-      const firstErr = r1.error || r2.error || r3.error || r4.error || r5.error || r6.error || r7.error || r8.error || r9.error;
+      const firstErr = r1.error || r2.error || r3.error || r4.error || r5.error || r6.error || r7.error || r8.error || r9.error || r10.error;
       if (firstErr) {
         setLoadFailMsg(firstErr.message || 'Gagal mengambil data dari database.');
         setSaveError(true);
@@ -242,6 +231,7 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
       }
       jenisRows = r1.data; varianRows = r2.data; transRows = r3.data; pengeluaranRows = r4.data;
       resellerRows = r5.data; distRows = r6.data; distItemRows = r7.data; countingRows = r8.data; outletRows = r9.data;
+      kategoriRows = r10.data;
     } catch (err) {
       // Network-level failure (wrong URL, no internet, CORS, etc.) — never let this spin forever
       setLoadFailMsg(
@@ -278,7 +268,7 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
         id: j.id,
         nama: j.nama,
         aktif: true,
-        varian: seedVarian.filter((v) => v.jenis_id === j.id).map((v) => ({ nama: v.nama, harga: v.harga, habis: false, aktif: true })),
+        varian: seedVarian.filter((v) => v.jenis_id === j.id).map((v) => ({ nama: v.nama, harga: v.harga, habis: false, aktif: true, kategoriId: null })),
       }));
       setJenisList(combined);
       setTransaksi([]);
@@ -286,6 +276,7 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
       setResellerList([]);
       setDistribusiList([]);
       setCountingList([]);
+      setKategoriList([]);
     } else {
       const combined = jenisRows.map((j) => ({
         id: j.id,
@@ -293,7 +284,7 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
         aktif: j.aktif !== false,
         varian: (varianRows || [])
           .filter((v) => v.jenis_id === j.id)
-          .map((v) => ({ nama: v.nama, harga: v.harga, habis: !!v.habis, aktif: v.aktif !== false })),
+          .map((v) => ({ nama: v.nama, harga: v.harga, habis: !!v.habis, aktif: v.aktif !== false, kategoriId: v.kategori_id || null })),
       }));
       setJenisList(combined);
       setTransaksi(
@@ -357,6 +348,7 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
           distribusiId: c.distribusi_id,
           jenisId: c.jenis_id,
           jumlah: c.jumlah,
+          jumlahRupiah: c.jumlah_rupiah,
           metodeBayar: c.metode_bayar,
           dicatatOleh: c.dicatat_oleh,
           waktu: c.waktu,
@@ -373,6 +365,8 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
     } else {
       setOutletList(outletRows.map((o) => ({ id: o.id, nama: o.nama, aktif: o.aktif !== false })));
     }
+
+    setKategoriList((kategoriRows || []).map((k) => ({ id: k.id, jenisId: k.jenis_id, nama: k.nama })));
 
     setSaveError(false);
     setLoading(false);
@@ -462,6 +456,39 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
     setSaveError(!!error);
   };
 
+  // ---- Kategori Varian ----
+  const tambahKategori = async (jenisId, namaKategori) => {
+    const row = { id: uid(), jenis_id: jenisId, nama: namaKategori, team_code: teamCode };
+    setKategoriList((prev) => [...prev, { id: row.id, jenisId, nama: namaKategori }]);
+    const { error } = await supabase.from('kategori_varian').insert(row);
+    setSaveError(!!error);
+  };
+
+  const renameKategori = async (id, namaBaru) => {
+    setKategoriList((prev) => prev.map((k) => (k.id === id ? { ...k, nama: namaBaru } : k)));
+    const { error } = await supabase.from('kategori_varian').update({ nama: namaBaru }).eq('id', id).eq('team_code', teamCode);
+    setSaveError(!!error);
+  };
+
+  const hapusKategori = async (id, namaKategori, jenisId) => {
+    if (!window.confirm(`Hapus kategori "${namaKategori}"? Varian di dalamnya TIDAK akan terhapus, cuma jadi tidak berkategori lagi (pindah ke "Lainnya").`)) return;
+    setKategoriList((prev) => prev.filter((k) => k.id !== id));
+    setJenisList((prev) => prev.map((j) => (
+      j.id === jenisId ? { ...j, varian: j.varian.map((v) => (v.kategoriId === id ? { ...v, kategoriId: null } : v)) } : j
+    )));
+    const { error: e1 } = await supabase.from('kategori_varian').delete().eq('id', id).eq('team_code', teamCode);
+    const { error: e2 } = await supabase.from('varian_es').update({ kategori_id: null }).eq('kategori_id', id).eq('team_code', teamCode);
+    setSaveError(!!(e1 || e2));
+  };
+
+  const updateVarianKategori = async (jenisId, varianNama, kategoriId) => {
+    setJenisList((prev) => prev.map((j) => (
+      j.id === jenisId ? { ...j, varian: j.varian.map((v) => (v.nama === varianNama ? { ...v, kategoriId } : v)) } : j
+    )));
+    const { error } = await supabase.from('varian_es').update({ kategori_id: kategoriId }).eq('jenis_id', jenisId).eq('nama', varianNama).eq('team_code', teamCode);
+    setSaveError(!!error);
+  };
+
   // ---- Distribusi ----
   const mulaiDistribusi = async (tujuanTipe, tujuanNama, resellerId, items) => {
     const distId = uid();
@@ -485,9 +512,9 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
     setSaveError(!!(e1 || e2));
   };
 
-  const tambahCounting = async (distribusiId, jenisId, jumlah, metodeBayar) => {
-    const row = { id: uid(), distribusi_id: distribusiId, jenis_id: jenisId, jumlah, metode_bayar: metodeBayar, dicatat_oleh: nama, waktu: Date.now(), team_code: teamCode };
-    setCountingList((prev) => [{ id: row.id, distribusiId, jenisId, jumlah, metodeBayar, dicatatOleh: nama, waktu: row.waktu }, ...prev]);
+  const tambahCounting = async (distribusiId, jumlahRupiah, metodeBayar) => {
+    const row = { id: uid(), distribusi_id: distribusiId, jenis_id: null, jumlah: null, jumlah_rupiah: jumlahRupiah, metode_bayar: metodeBayar, dicatat_oleh: nama, waktu: Date.now(), team_code: teamCode };
+    setCountingList((prev) => [{ id: row.id, distribusiId, jumlahRupiah, metodeBayar, dicatatOleh: nama, waktu: row.waktu }, ...prev]);
     const { error } = await supabase.from('counting').insert(row);
     setSaveError(!!error);
   };
@@ -540,10 +567,10 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
     setSaveError(!!error);
   };
 
-  const tambahVarian = async (jenisId, nama, harga) => {
+  const tambahVarian = async (jenisId, nama, harga, kategoriId) => {
     const id = uid();
-    setJenisList((prev) => prev.map((j) => (j.id === jenisId ? { ...j, varian: [...j.varian, { nama, harga, aktif: true }] } : j)));
-    const { error } = await supabase.from('varian_es').insert({ id, jenis_id: jenisId, nama, harga, aktif: true, team_code: teamCode });
+    setJenisList((prev) => prev.map((j) => (j.id === jenisId ? { ...j, varian: [...j.varian, { nama, harga, aktif: true, kategoriId: kategoriId || null }] } : j)));
+    const { error } = await supabase.from('varian_es').insert({ id, jenis_id: jenisId, nama, harga, aktif: true, kategori_id: kategoriId || null, team_code: teamCode });
     setSaveError(!!error);
   };
 
@@ -602,7 +629,7 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
     );
   }
 
-  if (loading || !jenisList || !transaksi || !pengeluaran || !resellerList || !distribusiList || !countingList || !outletList) {
+  if (loading || !jenisList || !transaksi || !pengeluaran || !resellerList || !distribusiList || !countingList || !outletList || !kategoriList) {
     return (
       <div style={styles.loadingScreen}>
         <Loader2 className="spin" size={28} color="#F0A04B" />
@@ -626,7 +653,7 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
       </div>
 
       <div style={styles.content}>
-        {tab === 'stok' && <StokView jenisList={jenisList} stokMap={stokMap} onTambahTransaksi={tambahTransaksi} onToggleHabis={toggleHabis} outletList={outletList} />}
+        {tab === 'stok' && <StokView jenisList={jenisList} kategoriList={kategoriList} stokMap={stokMap} onTambahTransaksi={tambahTransaksi} onToggleHabis={toggleHabis} outletList={outletList} />}
         {tab === 'distribusi' && (
           <DistribusiView
             jenisList={jenisList}
@@ -665,6 +692,11 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
             onHapusVarian={hapusVarian}
             onToggleVarianAktif={toggleVarianAktif}
             onUpdateHarga={updateHargaVarian}
+            kategoriList={kategoriList}
+            onTambahKategori={tambahKategori}
+            onRenameKategori={renameKategori}
+            onHapusKategori={hapusKategori}
+            onUpdateVarianKategori={updateVarianKategori}
             outletList={outletList}
             onTambahOutlet={tambahOutlet}
             onUpdateOutlet={updateOutlet}
@@ -745,9 +777,81 @@ function TabBtn({ active, onClick, label, icon }) {
 }
 
 // ============ STOK VIEW ============
-function StokView({ jenisList, stokMap, onTambahTransaksi, onToggleHabis, outletList }) {
+function StokView({ jenisList, kategoriList, stokMap, onTambahTransaksi, onToggleHabis, outletList }) {
   const [modal, setModal] = useState(null);
+  const [search, setSearch] = useState('');
+  const [openJenis, setOpenJenis] = useState(null);
+  const [openSubs, setOpenSubs] = useState(() => new Set());
+
   const totalStok = Object.values(stokMap).reduce((a, b) => a + b, 0);
+
+  const jenisAktif = useMemo(
+    () => jenisList
+      .filter((j) => j.aktif !== false)
+      .map((j) => ({ ...j, varian: j.varian.filter((v) => v.aktif !== false) })),
+    [jenisList]
+  );
+
+  const searchLower = search.trim().toLowerCase();
+  const isSearching = searchLower.length > 0;
+  const searchResults = useMemo(() => {
+    if (!isSearching) return [];
+    const out = [];
+    for (const j of jenisAktif) {
+      for (const v of j.varian) {
+        if (v.nama.toLowerCase().includes(searchLower)) out.push({ jenis: j, v });
+      }
+    }
+    return out;
+  }, [isSearching, searchLower, jenisAktif]);
+
+  const toggleSub = (key) => setOpenSubs((prev) => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+
+  const renderVarianRow = (jenis, v, showJenisLabel) => {
+    const key = jenis.id + '||' + v.nama;
+    const jumlah = stokMap[key] || 0;
+    return (
+      <div key={key} style={{ ...styles.varianRow, opacity: v.habis ? 0.6 : 1 }}>
+        <div style={styles.varianInfo}>
+          <div style={styles.varianName}>
+            {showJenisLabel && <span style={{ color: '#B08968', fontWeight: 500 }}>{jenis.nama} · </span>}
+            {v.nama}{v.habis ? ' · Bahan habis' : ''}
+          </div>
+          <div style={styles.varianMetaRow}>
+            <span style={{ color: jumlah <= 0 ? '#C0392B' : '#2E7D5B', fontWeight: 600 }}>{jumlah} pcs</span>
+            <span style={styles.hargaTag}>{formatRupiah(v.harga)}</span>
+          </div>
+        </div>
+        <div style={styles.varianActions}>
+          <button
+            style={{ ...styles.roundBtn, background: v.habis ? '#F0E4D4' : '#FFF0DC', color: v.habis ? '#8A6D4E' : '#C0862E' }}
+            onClick={() => onToggleHabis(jenis.id, v.nama, !v.habis)}
+            aria-label={v.habis ? `Tandai bahan ${v.nama} masih ada` : `Tandai bahan ${v.nama} habis`}
+          >
+            <CircleSlash size={15} />
+          </button>
+          <button
+            style={{ ...styles.roundBtn, background: '#FCEEE3', color: '#C0392B' }}
+            onClick={() => setModal({ jenisId: jenis.id, jenisNama: jenis.nama, varian: v.nama, harga: v.harga, tipe: 'keluar' })}
+            aria-label={`Kurangi stok ${v.nama}`}
+          >
+            <Minus size={16} />
+          </button>
+          <button
+            style={{ ...styles.roundBtn, background: '#E4F3EA', color: '#2E7D5B' }}
+            onClick={() => setModal({ jenisId: jenis.id, jenisNama: jenis.nama, varian: v.nama, harga: v.harga, tipe: 'masuk' })}
+            aria-label={`Tambah stok ${v.nama}`}
+          >
+            <Plus size={16} />
+          </button>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div>
@@ -756,55 +860,86 @@ function StokView({ jenisList, stokMap, onTambahTransaksi, onToggleHabis, outlet
         <div style={styles.summaryValue}>{totalStok} pcs</div>
       </div>
 
-      {jenisList.length === 0 && <EmptyState text="Belum ada jenis es. Tambahkan lewat tab Kelola." />}
+      <input
+        style={{ ...styles.input, marginBottom: 14 }}
+        placeholder="Cari rasa..."
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+      />
 
-      {jenisList.map((jenis) => (
-        <div key={jenis.id} style={styles.jenisBlock}>
-          <div style={styles.jenisTitle}>{jenis.nama}</div>
-          {jenis.varian.length === 0 ? (
-            <div style={styles.varianEmptyRow}>Belum ada varian rasa</div>
-          ) : (
-            jenis.varian.map((v) => {
-              const key = jenis.id + '||' + v.nama;
-              const jumlah = stokMap[key] || 0;
-              return (
-                <div key={v.nama} style={{ ...styles.varianRow, opacity: v.habis ? 0.6 : 1 }}>
-                  <div style={styles.varianInfo}>
-                    <div style={styles.varianName}>{v.nama}{v.habis ? ' · Bahan habis' : ''}</div>
-                    <div style={styles.varianMetaRow}>
-                      <span style={{ color: jumlah <= 0 ? '#C0392B' : '#2E7D5B', fontWeight: 600 }}>{jumlah} pcs</span>
-                      <span style={styles.hargaTag}>{formatRupiah(v.harga)}</span>
-                    </div>
-                  </div>
-                  <div style={styles.varianActions}>
-                    <button
-                      style={{ ...styles.roundBtn, background: v.habis ? '#F0E4D4' : '#FFF0DC', color: v.habis ? '#8A6D4E' : '#C0862E' }}
-                      onClick={() => onToggleHabis(jenis.id, v.nama, !v.habis)}
-                      aria-label={v.habis ? `Tandai bahan ${v.nama} masih ada` : `Tandai bahan ${v.nama} habis`}
-                    >
-                      <CircleSlash size={15} />
-                    </button>
-                    <button
-                      style={{ ...styles.roundBtn, background: '#FCEEE3', color: '#C0392B' }}
-                      onClick={() => setModal({ jenisId: jenis.id, jenisNama: jenis.nama, varian: v.nama, harga: v.harga, tipe: 'keluar' })}
-                      aria-label={`Kurangi stok ${v.nama}`}
-                    >
-                      <Minus size={16} />
-                    </button>
-                    <button
-                      style={{ ...styles.roundBtn, background: '#E4F3EA', color: '#2E7D5B' }}
-                      onClick={() => setModal({ jenisId: jenis.id, jenisNama: jenis.nama, varian: v.nama, harga: v.harga, tipe: 'masuk' })}
-                      aria-label={`Tambah stok ${v.nama}`}
-                    >
-                      <Plus size={16} />
-                    </button>
-                  </div>
+      {isSearching ? (
+        searchResults.length === 0 ? (
+          <EmptyState text="Gak ketemu rasa dengan nama itu." />
+        ) : (
+          searchResults.map(({ jenis, v }) => renderVarianRow(jenis, v, true))
+        )
+      ) : jenisAktif.length === 0 ? (
+        <EmptyState text="Belum ada jenis es aktif. Tambahkan/aktifkan lewat tab Kelola." />
+      ) : (
+        jenisAktif.map((jenis) => {
+          const katsJenis = kategoriList.filter((k) => k.jenisId === jenis.id);
+          const grouped = {};
+          const tanpaKategori = [];
+          for (const v of jenis.varian) {
+            if (v.kategoriId && katsJenis.some((k) => k.id === v.kategoriId)) {
+              (grouped[v.kategoriId] = grouped[v.kategoriId] || []).push(v);
+            } else {
+              tanpaKategori.push(v);
+            }
+          }
+          return (
+            <div key={jenis.id} style={{ marginBottom: 8 }}>
+              <AccordionHeader
+                icon={<Package size={15} />}
+                label={jenis.nama}
+                count={jenis.varian.length}
+                open={openJenis === jenis.id}
+                onClick={() => setOpenJenis((p) => (p === jenis.id ? null : jenis.id))}
+              />
+              {openJenis === jenis.id && (
+                <div style={styles.accordionBody}>
+                  {jenis.varian.length === 0 ? (
+                    <div style={styles.varianEmptyRow}>Belum ada varian rasa</div>
+                  ) : katsJenis.length === 0 ? (
+                    jenis.varian.map((v) => renderVarianRow(jenis, v, false))
+                  ) : (
+                    <>
+                      {katsJenis.map((k) => {
+                        const list = grouped[k.id] || [];
+                        if (list.length === 0) return null;
+                        const subKey = jenis.id + '::' + k.id;
+                        return (
+                          <div key={k.id} style={{ marginBottom: 6 }}>
+                            <button style={styles.subAccordionHeader} onClick={() => toggleSub(subKey)}>
+                              <span>{k.nama}</span>
+                              <span style={styles.accordionCount}>{list.length}</span>
+                              <ChevronDown size={13} style={{ transform: openSubs.has(subKey) ? 'rotate(180deg)' : 'none', marginLeft: 'auto' }} />
+                            </button>
+                            {openSubs.has(subKey) && list.map((v) => renderVarianRow(jenis, v, false))}
+                          </div>
+                        );
+                      })}
+                      {tanpaKategori.length > 0 && (() => {
+                        const subKey = jenis.id + '::lainnya';
+                        return (
+                          <div style={{ marginBottom: 6 }}>
+                            <button style={styles.subAccordionHeader} onClick={() => toggleSub(subKey)}>
+                              <span>Lainnya</span>
+                              <span style={styles.accordionCount}>{tanpaKategori.length}</span>
+                              <ChevronDown size={13} style={{ transform: openSubs.has(subKey) ? 'rotate(180deg)' : 'none', marginLeft: 'auto' }} />
+                            </button>
+                            {openSubs.has(subKey) && tanpaKategori.map((v) => renderVarianRow(jenis, v, false))}
+                          </div>
+                        );
+                      })()}
+                    </>
+                  )}
                 </div>
-              );
-            })
-          )}
-        </div>
-      ))}
+              )}
+            </div>
+          );
+        })
+      )}
 
       {modal && (
         <TransaksiModal
@@ -1162,12 +1297,13 @@ function RiwayatView({ transaksi, jenisList, onHapus }) {
 }
 
 // ============ KELOLA VIEW ============
-function KelolaView({ jenisList, onTambahJenis, onHapusJenis, onToggleJenisAktif, onTambahVarian, onHapusVarian, onToggleVarianAktif, onUpdateHarga, outletList, onTambahOutlet, onUpdateOutlet, onHapusOutlet, resellerList, onTambahReseller, onUpdateReseller, transaksi, pengeluaran, distribusiList, countingList }) {
+function KelolaView({ jenisList, onTambahJenis, onHapusJenis, onToggleJenisAktif, onTambahVarian, onHapusVarian, onToggleVarianAktif, onUpdateHarga, kategoriList, onTambahKategori, onRenameKategori, onHapusKategori, onUpdateVarianKategori, outletList, onTambahOutlet, onUpdateOutlet, onHapusOutlet, resellerList, onTambahReseller, onUpdateReseller, transaksi, pengeluaran, distribusiList, countingList }) {
   const [namaJenisBaru, setNamaJenisBaru] = useState('');
   const [varianInput, setVarianInput] = useState({});
   const [hargaInput, setHargaInput] = useState({});
   const [namaResellerBaru, setNamaResellerBaru] = useState('');
   const [namaOutletBaru, setNamaOutletBaru] = useState('');
+  const [namaKategoriBaru, setNamaKategoriBaru] = useState({});
   const [openSection, setOpenSection] = useState('menu'); // hanya satu section terbuka sekaligus
 
   const anggotaTim = useMemo(() => {
@@ -1207,6 +1343,13 @@ function KelolaView({ jenisList, onTambahJenis, onHapusJenis, onToggleJenisAktif
     if (!nama) return;
     onTambahOutlet(nama);
     setNamaOutletBaru('');
+  };
+
+  const submitKategori = (jenisId) => {
+    const nama = (namaKategoriBaru[jenisId] || '').trim();
+    if (!nama) return;
+    onTambahKategori(jenisId, nama);
+    setNamaKategoriBaru((s) => ({ ...s, [jenisId]: '' }));
   };
 
   const toggle = (key) => setOpenSection((prev) => (prev === key ? '' : key));
@@ -1253,31 +1396,44 @@ function KelolaView({ jenisList, onTambahJenis, onHapusJenis, onToggleJenisAktif
               {jenis.varian.length === 0 ? (
                 <div style={styles.varianEmptyRow}>Belum ada rasa</div>
               ) : (
-                jenis.varian.map((v) => (
-                  <div key={v.nama} style={{ ...styles.kelolaVarianRow, opacity: v.aktif === false ? 0.5 : 1 }}>
-                    <div style={styles.kelolaVarianNama}>{v.nama}{v.aktif === false ? ' (nonaktif)' : ''}</div>
-                    <div style={styles.hargaEditWrap}>
-                      <span style={styles.hargaPrefix}>Rp</span>
-                      <input
-                        type="number"
-                        inputMode="numeric"
-                        style={styles.hargaEditInput}
-                        defaultValue={v.harga}
-                        onBlur={(e) => onUpdateHarga(jenis.id, v.nama, parseInt(e.target.value, 10) || 0)}
-                      />
+                jenis.varian.map((v) => {
+                  const katsJenis = kategoriList.filter((k) => k.jenisId === jenis.id);
+                  return (
+                    <div key={v.nama} style={{ ...styles.kelolaVarianRow, opacity: v.aktif === false ? 0.5 : 1, flexWrap: 'wrap' }}>
+                      <div style={styles.kelolaVarianNama}>{v.nama}{v.aktif === false ? ' (nonaktif)' : ''}</div>
+                      {katsJenis.length > 0 && (
+                        <select
+                          style={styles.kategoriSelectSmall}
+                          value={v.kategoriId || ''}
+                          onChange={(e) => onUpdateVarianKategori(jenis.id, v.nama, e.target.value || null)}
+                        >
+                          <option value="">Tanpa kategori</option>
+                          {katsJenis.map((k) => <option key={k.id} value={k.id}>{k.nama}</option>)}
+                        </select>
+                      )}
+                      <div style={styles.hargaEditWrap}>
+                        <span style={styles.hargaPrefix}>Rp</span>
+                        <input
+                          type="number"
+                          inputMode="numeric"
+                          style={styles.hargaEditInput}
+                          defaultValue={v.harga}
+                          onBlur={(e) => onUpdateHarga(jenis.id, v.nama, parseInt(e.target.value, 10) || 0)}
+                        />
+                      </div>
+                      <button
+                        style={{ ...styles.deleteBtnSmall, color: v.aktif === false ? '#2E7D5B' : '#C0862E' }}
+                        onClick={() => onToggleVarianAktif(jenis.id, v.nama, v.aktif === false)}
+                        aria-label={v.aktif === false ? `Aktifkan ${v.nama}` : `Nonaktifkan ${v.nama}`}
+                      >
+                        {v.aktif === false ? <CheckCircle2 size={13} /> : <CircleSlash size={13} />}
+                      </button>
+                      <button style={styles.deleteBtnSmall} onClick={() => onHapusVarian(jenis.id, v.nama)} aria-label={`Hapus ${v.nama}`}>
+                        <X size={13} />
+                      </button>
                     </div>
-                    <button
-                      style={{ ...styles.deleteBtnSmall, color: v.aktif === false ? '#2E7D5B' : '#C0862E' }}
-                      onClick={() => onToggleVarianAktif(jenis.id, v.nama, v.aktif === false)}
-                      aria-label={v.aktif === false ? `Aktifkan ${v.nama}` : `Nonaktifkan ${v.nama}`}
-                    >
-                      {v.aktif === false ? <CheckCircle2 size={13} /> : <CircleSlash size={13} />}
-                    </button>
-                    <button style={styles.deleteBtnSmall} onClick={() => onHapusVarian(jenis.id, v.nama)} aria-label={`Hapus ${v.nama}`}>
-                      <X size={13} />
-                    </button>
-                  </div>
-                ))
+                  );
+                })
               )}
 
               <div style={{ ...styles.addRow, marginTop: 10 }}>
@@ -1297,6 +1453,32 @@ function KelolaView({ jenisList, onTambahJenis, onHapusJenis, onToggleJenisAktif
                   onKeyDown={(e) => e.key === 'Enter' && submitVarian(jenis.id)}
                 />
                 <button style={styles.addBtnSmall} onClick={() => submitVarian(jenis.id)}><Plus size={15} /></button>
+              </div>
+
+              <div style={styles.kategoriManageBox}>
+                <div style={styles.fieldLabel}>Kategori rasa (opsional)</div>
+                {kategoriList.filter((k) => k.jenisId === jenis.id).map((k) => (
+                  <div key={k.id} style={styles.kategoriEditRow}>
+                    <input
+                      style={styles.kategoriEditInput}
+                      defaultValue={k.nama}
+                      onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== k.nama) onRenameKategori(k.id, v); }}
+                    />
+                    <button style={styles.deleteBtnSmall} onClick={() => onHapusKategori(k.id, k.nama, jenis.id)} aria-label={`Hapus kategori ${k.nama}`}>
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                ))}
+                <div style={styles.addRow}>
+                  <input
+                    style={{ ...styles.input, marginBottom: 0, flex: 1, fontSize: 13 }}
+                    placeholder="mis. Klasik, Real Fruit, Crunchy"
+                    value={namaKategoriBaru[jenis.id] || ''}
+                    onChange={(e) => setNamaKategoriBaru((s) => ({ ...s, [jenis.id]: e.target.value }))}
+                    onKeyDown={(e) => e.key === 'Enter' && submitKategori(jenis.id)}
+                  />
+                  <button style={styles.addBtnSmall} onClick={() => submitKategori(jenis.id)}><Plus size={15} /></button>
+                </div>
               </div>
             </div>
           ))}
@@ -1847,7 +2029,7 @@ function DistribusiCard({ d, jenisList, countingList, onClick, selesai }) {
   const jenisNama = (id) => jenisList.find((j) => j.id === id)?.nama || id;
   const totalDibawa = d.items.reduce((a, it) => a + it.jumlahDibawa, 0);
   const totalRetur = d.items.reduce((a, it) => a + it.jumlahRetur, 0);
-  const totalCounting = countingList.filter((c) => c.distribusiId === d.id).reduce((a, c) => a + c.jumlah, 0);
+  const totalCountingRupiah = countingList.filter((c) => c.distribusiId === d.id).reduce((a, c) => a + (c.jumlahRupiah || 0), 0);
 
   return (
     <button style={styles.distCard} onClick={onClick}>
@@ -1863,7 +2045,7 @@ function DistribusiCard({ d, jenisList, countingList, onClick, selesai }) {
         {new Date(d.waktuMulai).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })}
         {' · '}Dibawa {totalDibawa} pcs
         {selesai && <> · Retur {totalRetur} pcs · Terjual {totalDibawa - totalRetur} pcs</>}
-        {!selesai && d.tujuanTipe === 'lokasi' && totalCounting > 0 && <> · Counting {totalCounting} pcs</>}
+        {!selesai && d.tujuanTipe === 'lokasi' && totalCountingRupiah > 0 && <> · Tercatat {formatRupiah(totalCountingRupiah)}</>}
       </div>
       <div style={styles.distCardItems}>
         {d.items.map((it) => `${jenisNama(it.jenisId)} - ${it.varian} (${it.jumlahDibawa})`).join(' · ')}
@@ -1992,27 +2174,26 @@ function DetailDistribusiModal({ d, jenisList, countingList, onClose, onTambahCo
   const isBerjalan = d.status === 'berjalan';
   const [showTutup, setShowTutup] = useState(false);
   const [returVal, setReturVal] = useState(() => Object.fromEntries(d.items.map((it) => [it.id, it.jumlahRetur])));
-  const [countJenis, setCountJenis] = useState(d.items[0]?.jenisId || '');
-  const [countJumlah, setCountJumlah] = useState('');
+  const [countNominal, setCountNominal] = useState('');
   const [countMetode, setCountMetode] = useState('Cash');
 
-  const totalCountingByJenis = {};
-  for (const c of countingList) totalCountingByJenis[c.jenisId] = (totalCountingByJenis[c.jenisId] || 0) + c.jumlah;
-  const totalDibawaByJenis = {};
-  for (const it of d.items) totalDibawaByJenis[it.jenisId] = (totalDibawaByJenis[it.jenisId] || 0) + it.jumlahDibawa;
-
   const submitCounting = () => {
-    const n = parseInt(countJumlah, 10);
+    const n = parseInt(countNominal, 10);
     if (!n || n <= 0) return;
-    onTambahCounting(d.id, countJenis, n, countMetode);
-    setCountJumlah('');
+    onTambahCounting(d.id, n, countMetode);
+    setCountNominal('');
   };
 
   const totalDibawa = d.items.reduce((a, it) => a + it.jumlahDibawa, 0);
   const totalReturInput = Object.values(returVal).reduce((a, v) => a + (parseInt(v, 10) || 0), 0);
   const totalTerjualEstimasi = totalDibawa - totalReturInput;
-  const totalCountingSemua = countingList.reduce((a, c) => a + c.jumlah, 0);
-  const selisih = totalTerjualEstimasi - totalCountingSemua;
+  const totalPendapatanEstimasi = d.items.reduce((a, it) => {
+    const dibawa = it.jumlahDibawa;
+    const retur = parseInt(returVal[it.id], 10) || 0;
+    return a + (dibawa - retur) * (it.hargaSatuan || 0);
+  }, 0);
+  const totalCountingRupiah = countingList.reduce((a, c) => a + (c.jumlahRupiah || 0), 0);
+  const selisihRupiah = totalPendapatanEstimasi - totalCountingRupiah;
 
   return (
     <div style={styles.overlay} onClick={onClose}>
@@ -2035,12 +2216,15 @@ function DetailDistribusiModal({ d, jenisList, countingList, onClose, onTambahCo
 
         {d.tujuanTipe === 'lokasi' && isBerjalan && (
           <>
-            <div style={{ ...styles.sectionLabel, marginTop: 14 }}>Catat penjualan (opsional)</div>
+            <div style={{ ...styles.sectionLabel, marginTop: 14 }}>Catat uang masuk (opsional)</div>
             <div style={styles.addRow}>
-              <select style={{ ...styles.input, marginBottom: 0, flex: 1 }} value={countJenis} onChange={(e) => setCountJenis(e.target.value)}>
-                {[...new Set(d.items.map((it) => it.jenisId))].map((jid) => <option key={jid} value={jid}>{jenisNama(jid)}</option>)}
-              </select>
-              <input type="number" inputMode="numeric" placeholder="Jml" style={{ ...styles.input, marginBottom: 0, flex: 0.5 }} value={countJumlah} onChange={(e) => setCountJumlah(e.target.value)} />
+              <input
+                type="number" inputMode="numeric" placeholder="Nominal (Rp)"
+                style={{ ...styles.input, marginBottom: 0, flex: 1 }}
+                value={countNominal}
+                onChange={(e) => setCountNominal(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && submitCounting()}
+              />
             </div>
             <div style={{ ...styles.lokasiGrid, marginBottom: 10 }}>
               <button onClick={() => setCountMetode('Cash')} style={{ ...styles.lokasiChip, ...(countMetode === 'Cash' ? styles.lokasiChipActive : {}) }}><Banknote size={13} style={{ marginRight: 4, verticalAlign: -2 }} />Cash</button>
@@ -2052,8 +2236,8 @@ function DetailDistribusiModal({ d, jenisList, countingList, onClose, onTambahCo
               <div style={{ marginBottom: 10 }}>
                 {countingList.map((c) => (
                   <div key={c.id} style={styles.kelolaVarianRow}>
-                    <div style={styles.kelolaVarianNama}>{jenisNama(c.jenisId)} · {c.metodeBayar} {c.dicatatOleh ? `· ${c.dicatatOleh}` : ''}</div>
-                    <div style={{ fontSize: 13, fontWeight: 700 }}>{c.jumlah} pcs</div>
+                    <div style={styles.kelolaVarianNama}>{c.metodeBayar} {c.dicatatOleh ? `· ${c.dicatatOleh}` : ''}</div>
+                    <div style={{ fontSize: 13, fontWeight: 700 }}>{formatRupiah(c.jumlahRupiah || 0)}</div>
                     <button style={styles.deleteBtnSmall} onClick={() => onHapusCounting(c.id)}><X size={13} /></button>
                   </div>
                 ))}
@@ -2085,13 +2269,14 @@ function DetailDistribusiModal({ d, jenisList, countingList, onClose, onTambahCo
 
             <div style={styles.untungCard}>
               <div style={styles.untungRow}><span>Total terjual (estimasi)</span><strong>{totalTerjualEstimasi} pcs</strong></div>
-              {totalCountingSemua > 0 && (
+              <div style={styles.untungRow}><span>Estimasi pendapatan</span><strong>{formatRupiah(totalPendapatanEstimasi)}</strong></div>
+              {totalCountingRupiah > 0 && (
                 <>
-                  <div style={styles.untungRow}><span>Total counting tercatat</span><strong>{totalCountingSemua} pcs</strong></div>
-                  {selisih !== 0 && (
+                  <div style={styles.untungRow}><span>Total uang tercatat (counting)</span><strong>{formatRupiah(totalCountingRupiah)}</strong></div>
+                  {selisihRupiah !== 0 && (
                     <div style={{ ...styles.untungRow, color: '#C0392B' }}>
                       <span><AlertTriangle size={13} style={{ marginRight: 4, verticalAlign: -2 }} />Ada selisih</span>
-                      <strong>{selisih > 0 ? '+' : ''}{selisih} pcs</strong>
+                      <strong>{formatRupiah(Math.abs(selisihRupiah))}</strong>
                     </div>
                   )}
                 </>
@@ -2290,5 +2475,23 @@ const styles = {
     padding: '1px 7px', marginLeft: 2,
   },
   accordionBody: { marginBottom: 16 },
+  subAccordionHeader: {
+    display: 'flex', alignItems: 'center', gap: 8, width: '100%', background: '#FFF3E4', color: '#8A5A2B',
+    borderRadius: 10, padding: '8px 12px', fontSize: 12.5, fontWeight: 700, marginBottom: 6,
+  },
+  kategoriSelectSmall: {
+    fontSize: 11, color: '#8A5A2B', background: '#FFF3E4', border: '1px solid #F0DCC0', borderRadius: 8,
+    padding: '3px 6px', marginRight: 6, maxWidth: 110,
+  },
+  kategoriManageBox: {
+    marginTop: 12, paddingTop: 12, borderTop: '1px dashed #EFDFC8',
+  },
+  kategoriEditRow: {
+    display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6,
+  },
+  kategoriEditInput: {
+    flex: 1, fontSize: 13, color: '#3A2618', border: '1px solid #EFDFC8', borderRadius: 8,
+    padding: '6px 10px', background: '#fff',
+  },
   footer: { textAlign: 'center', fontSize: 10.5, color: '#D9C4A8', padding: '10px 16px 4px' },
 };
