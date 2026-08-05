@@ -308,6 +308,7 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
           id: p.id,
           deskripsi: p.deskripsi,
           jumlah: p.jumlah,
+          tipe: p.tipe || 'keluar',
           waktu: p.waktu,
           dicatatOleh: p.dicatat_oleh,
         }))
@@ -402,7 +403,7 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
 
     // Kalau stok keluar dikategorikan "pengeluaran", otomatis buat catatan pengeluaran terkait
     if (t.tipe === 'keluar' && t.kategoriKeluar === 'pengeluaran' && t.nominalPengeluaran > 0) {
-      await tambahPengeluaran(t.catatan ? `Stok keluar: ${t.catatan}` : `Stok keluar (${t.varian})`, t.nominalPengeluaran);
+      await tambahPengeluaran(t.catatan ? `Stok keluar: ${t.catatan}` : `Stok keluar (${t.varian})`, t.nominalPengeluaran, 'keluar');
     }
   };
 
@@ -414,8 +415,8 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
     setSaveError(!!error);
   };
 
-  const tambahPengeluaran = async (deskripsi, jumlah) => {
-    const row = { id: uid(), deskripsi, jumlah, waktu: Date.now(), team_code: teamCode, dicatat_oleh: nama };
+  const tambahPengeluaran = async (deskripsi, jumlah, tipe) => {
+    const row = { id: uid(), deskripsi, jumlah, tipe: tipe || 'keluar', waktu: Date.now(), team_code: teamCode, dicatat_oleh: nama };
     setPengeluaran((prev) => [{ ...row, dicatatOleh: nama }, ...prev]);
     const { error } = await supabase.from('pengeluaran').insert(row);
     setSaveError(!!error);
@@ -664,7 +665,7 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
         <TabBtn active={tab === 'stok'} onClick={() => setTab('stok')} label="Stok" icon={<Package size={16} />} />
         <TabBtn active={tab === 'distribusi'} onClick={() => setTab('distribusi')} label="Distribusi" icon={<Truck size={16} />} />
         <TabBtn active={tab === 'pendapatan'} onClick={() => setTab('pendapatan')} label="Pendapatan" icon={<Wallet size={16} />} />
-        <TabBtn active={tab === 'pengeluaran'} onClick={() => setTab('pengeluaran')} label="Pengeluaran" icon={<Receipt size={16} />} />
+        <TabBtn active={tab === 'pengeluaran'} onClick={() => setTab('pengeluaran')} label="Kas Lain" icon={<Receipt size={16} />} />
         <TabBtn active={tab === 'riwayat'} onClick={() => setTab('riwayat')} label="Riwayat" icon={<Clock size={16} />} />
         <TabBtn active={tab === 'laporan'} onClick={() => setTab('laporan')} label="Laporan" icon={<FileDown size={16} />} />
         <TabBtn active={tab === 'kelola'} onClick={() => setTab('kelola')} label="Kelola" icon={<ChevronDown size={16} />} />
@@ -999,7 +1000,7 @@ function TransaksiModal({ info, onClose, onSubmit, outletList }) {
       tipe: info.tipe,
       jumlah: n,
       hargaSatuan: info.harga,
-      lokasi: lokasi || null,
+      lokasi: (isMasuk || kategoriKeluar === 'jual') ? (lokasi || null) : null,
       metodeBayar: isMasuk ? null : (kategoriKeluar === 'jual' ? metodeBayar : null),
       kategoriKeluar: isMasuk ? null : kategoriKeluar,
       nominalPengeluaran: kategoriKeluar === 'pengeluaran' ? nominalPengeluaranEfektif : 0,
@@ -1060,19 +1061,23 @@ function TransaksiModal({ info, onClose, onSubmit, outletList }) {
           </>
         )}
 
-        <label style={styles.fieldLabel}>{isMasuk ? 'Titik jual (opsional)' : 'Titik jual'}</label>
-        <div style={styles.lokasiGrid}>
-          {outletAktif.length === 0 && <div style={styles.varianEmptyRow}>Belum ada outlet aktif. Tambahkan di tab Kelola.</div>}
-          {outletAktif.map((o) => (
-            <button
-              key={o.id}
-              onClick={() => setLokasi(lokasi === o.nama && isMasuk ? '' : o.nama)}
-              style={{ ...styles.lokasiChip, ...(lokasi === o.nama ? styles.lokasiChipActive : {}) }}
-            >
-              {o.nama}
-            </button>
-          ))}
-        </div>
+        {(isMasuk || kategoriKeluar === 'jual') && (
+          <>
+            <label style={styles.fieldLabel}>{isMasuk ? 'Titik jual (opsional)' : 'Titik jual'}</label>
+            <div style={styles.lokasiGrid}>
+              {outletAktif.length === 0 && <div style={styles.varianEmptyRow}>Belum ada outlet aktif. Tambahkan di tab Kelola.</div>}
+              {outletAktif.map((o) => (
+                <button
+                  key={o.id}
+                  onClick={() => setLokasi(lokasi === o.nama && isMasuk ? '' : o.nama)}
+                  style={{ ...styles.lokasiChip, ...(lokasi === o.nama ? styles.lokasiChipActive : {}) }}
+                >
+                  {o.nama}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
 
         {!isMasuk && kategoriKeluar === 'jual' && (
           <>
@@ -1145,7 +1150,8 @@ function PendapatanView({ transaksi, pengeluaran, distribusiList, countingList }
     return hitungPendapatanReseller(list).totalPendapatan;
   };
   const sumSince = (ts) => sumLangsungSince(ts) + sumDistribusiSince(ts) + sumResellerSince(ts);
-  const sumPengeluaranSince = (ts) => pengeluaran.filter((p) => p.waktu >= ts).reduce((a, p) => a + p.jumlah, 0);
+  const sumPengeluaranSince = (ts) => pengeluaran.filter((p) => p.waktu >= ts && p.tipe !== 'masuk').reduce((a, p) => a + p.jumlah, 0);
+  const sumMasukLainSince = (ts) => pengeluaran.filter((p) => p.waktu >= ts && p.tipe === 'masuk').reduce((a, p) => a + p.jumlah, 0);
 
   const harian = sumSince(startOfDay);
   const mingguan = sumSince(startOfWeek);
@@ -1153,6 +1159,7 @@ function PendapatanView({ transaksi, pengeluaran, distribusiList, countingList }
   const tahunan = sumSince(startOfYear);
 
   const pengeluaranBulanan = sumPengeluaranSince(startOfMonth);
+  const masukLainBulanan = sumMasukLainSince(startOfMonth);
 
   const resellerInfoAll = useMemo(() => hitungPendapatanReseller(resellerSelesai), [resellerSelesai]);
 
@@ -1202,13 +1209,19 @@ function PendapatanView({ transaksi, pengeluaran, distribusiList, countingList }
           <span>Pendapatan bulan ini</span>
           <strong style={{ color: '#2E7D5B' }}>{formatRupiah(bulanan)}</strong>
         </div>
+        {masukLainBulanan > 0 && (
+          <div style={styles.untungRow}>
+            <span>Pemasukan lain bulan ini</span>
+            <strong style={{ color: '#2E7D5B' }}>+{formatRupiah(masukLainBulanan)}</strong>
+          </div>
+        )}
         <div style={styles.untungRow}>
           <span>Pengeluaran bulan ini</span>
           <strong style={{ color: '#C0392B' }}>-{formatRupiah(pengeluaranBulanan)}</strong>
         </div>
         <div style={{ ...styles.untungRow, borderTop: '1px solid #EFDFC8', paddingTop: 8, marginTop: 4 }}>
           <span style={{ fontWeight: 700 }}>Untung bersih bulan ini</span>
-          <strong style={{ color: '#3A2618', fontSize: 15 }}>{formatRupiah(bulanan - pengeluaranBulanan)}</strong>
+          <strong style={{ color: '#3A2618', fontSize: 15 }}>{formatRupiah(bulanan + masukLainBulanan - pengeluaranBulanan)}</strong>
         </div>
       </div>
 
@@ -1248,30 +1261,36 @@ function PendapatanView({ transaksi, pengeluaran, distribusiList, countingList }
 function PengeluaranView({ pengeluaran, onTambah, onHapus }) {
   const [deskripsi, setDeskripsi] = useState('');
   const [jumlah, setJumlah] = useState('');
+  const [tipe, setTipe] = useState('keluar');
 
-  const totalSemua = pengeluaran.reduce((a, p) => a + p.jumlah, 0);
+  const totalKeluar = pengeluaran.filter((p) => p.tipe !== 'masuk').reduce((a, p) => a + p.jumlah, 0);
+  const totalMasukLain = pengeluaran.filter((p) => p.tipe === 'masuk').reduce((a, p) => a + p.jumlah, 0);
 
   const submit = () => {
     const desk = deskripsi.trim();
     const n = parseInt(jumlah, 10) || 0;
     if (!desk || n <= 0) return;
-    onTambah(desk, n);
+    onTambah(desk, n, tipe);
     setDeskripsi('');
     setJumlah('');
   };
 
   return (
     <div>
-      <div style={{ ...styles.summaryCard, background: 'linear-gradient(135deg, #C0392B, #A73024)' }}>
-        <div style={styles.summaryLabel}>Total pengeluaran tercatat</div>
-        <div style={styles.summaryValue}>{formatRupiah(totalSemua)}</div>
+      <div style={styles.pendapatanGrid}>
+        <PendapatanCard label="Total pengeluaran" value={totalKeluar} />
+        <PendapatanCard label="Pemasukan lain (non-jualan)" value={totalMasukLain} />
       </div>
 
       <div style={styles.kelolaAddCard}>
-        <label style={styles.fieldLabel}>Catat pengeluaran baru</label>
+        <label style={styles.fieldLabel}>Catat kas baru</label>
+        <div style={styles.lokasiGrid}>
+          <button onClick={() => setTipe('keluar')} style={{ ...styles.lokasiChip, ...(tipe === 'keluar' ? { ...styles.lokasiChipActive, background: '#C0392B', borderColor: '#C0392B' } : {}) }}>Pengeluaran</button>
+          <button onClick={() => setTipe('masuk')} style={{ ...styles.lokasiChip, ...(tipe === 'masuk' ? { ...styles.lokasiChipActive, background: '#2E7D5B', borderColor: '#2E7D5B' } : {}) }}>Pemasukan lain</button>
+        </div>
         <input
           style={styles.input}
-          placeholder="Keterangan (mis. telur + gula)"
+          placeholder={tipe === 'keluar' ? 'Keterangan (mis. telur + gula)' : 'Keterangan (mis. suntikan modal dari Bu Ani)'}
           value={deskripsi}
           onChange={(e) => setDeskripsi(e.target.value)}
         />
@@ -1290,26 +1309,29 @@ function PengeluaranView({ pengeluaran, onTambah, onHapus }) {
       </div>
 
       {pengeluaran.length === 0 ? (
-        <EmptyState text="Belum ada pengeluaran tercatat." />
+        <EmptyState text="Belum ada kas tercatat." />
       ) : (
-        pengeluaran.map((p) => (
-          <div key={p.id} style={styles.riwayatRow}>
-            <div style={{ ...styles.riwayatIcon, background: '#FCEEE3', color: '#C0392B' }}>
-              <Receipt size={16} />
-            </div>
-            <div style={styles.riwayatInfo}>
-              <div style={styles.riwayatTitle}>{p.deskripsi}</div>
-              <div style={styles.riwayatMeta}>
-                {new Date(p.waktu).toLocaleString('id-ID', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
-                {p.dicatatOleh ? <> · {p.dicatatOleh}</> : null}
+        pengeluaran.map((p) => {
+          const isMasukLain = p.tipe === 'masuk';
+          return (
+            <div key={p.id} style={styles.riwayatRow}>
+              <div style={{ ...styles.riwayatIcon, background: isMasukLain ? '#E4F3EA' : '#FCEEE3', color: isMasukLain ? '#2E7D5B' : '#C0392B' }}>
+                {isMasukLain ? <TrendingUp size={16} /> : <Receipt size={16} />}
               </div>
+              <div style={styles.riwayatInfo}>
+                <div style={styles.riwayatTitle}>{p.deskripsi}{isMasukLain ? <span style={styles.kategoriBadge}>Pemasukan lain</span> : null}</div>
+                <div style={styles.riwayatMeta}>
+                  {new Date(p.waktu).toLocaleString('id-ID', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                  {p.dicatatOleh ? <> · {p.dicatatOleh}</> : null}
+                </div>
+              </div>
+              <div style={{ ...styles.riwayatQty, color: isMasukLain ? '#2E7D5B' : '#C0392B' }}>{isMasukLain ? '+' : '-'}{formatRupiah(p.jumlah)}</div>
+              <button style={styles.deleteBtn} onClick={() => onHapus(p.id)} aria-label="Hapus catatan">
+                <Trash2 size={14} />
+              </button>
             </div>
-            <div style={{ ...styles.riwayatQty, color: '#C0392B' }}>-{formatRupiah(p.jumlah)}</div>
-            <button style={styles.deleteBtn} onClick={() => onHapus(p.id)} aria-label="Hapus pengeluaran">
-              <Trash2 size={14} />
-            </button>
-          </div>
-        ))
+          );
+        })
       )}
     </div>
   );
@@ -1742,7 +1764,8 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
   const totalPendapatanLangsung = filteredTransaksi
     .filter((t) => t.tipe === 'keluar' && (t.kategoriKeluar || 'jual') === 'jual')
     .reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0);
-  const totalPengeluaran = filteredPengeluaran.reduce((a, p) => a + p.jumlah, 0);
+  const totalPengeluaran = filteredPengeluaran.filter((p) => p.tipe !== 'masuk').reduce((a, p) => a + p.jumlah, 0);
+  const totalMasukLain = filteredPengeluaran.filter((p) => p.tipe === 'masuk').reduce((a, p) => a + p.jumlah, 0);
 
   const distSelesaiLokasiRange = useMemo(
     () => (distribusiList || []).filter((d) => d.tujuanTipe === 'lokasi' && d.status === 'selesai' && d.waktuSelesai >= range.start && d.waktuSelesai < range.end),
@@ -1758,7 +1781,7 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
 
   const totalPendapatanLangsungDanTitikJual = totalPendapatanLangsung + distInfoRange.totalPendapatan;
   const totalPendapatan = totalPendapatanLangsungDanTitikJual + resellerInfoRange.totalPendapatan;
-  const untungBersih = totalPendapatan - totalPengeluaran;
+  const untungBersih = totalPendapatan + totalMasukLain - totalPengeluaran;
 
   // Breakdown Cash/QRIS/Tidak tercatat — dari transaksi langsung (metode bayar) + counting distribusi
   const totalCashLangsung = filteredTransaksi.filter((t) => t.tipe === 'keluar' && (t.kategoriKeluar || 'jual') === 'jual' && t.metodeBayar === 'Cash').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0);
@@ -1767,17 +1790,45 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
   const totalQris = totalQrisLangsung + distInfoRange.qris;
   const totalTidakTercatat = distInfoRange.tidakTercatat;
 
-  // Stok masuk (input manual + retur distribusi) per hari, per jenis
+  // Stok masuk: PRODUKSI MURNI (manual) dan RETUR DISTRIBUSI dipisah — biar gak nyampur ke info produksi harian
   const stokMasukManual = filteredTransaksi.filter((t) => t.tipe === 'masuk');
-  const stokMasukPerJenis = useMemo(() => {
+  const produksiPerJenis = useMemo(() => {
     const map = {};
     for (const t of stokMasukManual) map[t.jenisId] = (map[t.jenisId] || 0) + t.jumlah;
+    return Object.entries(map).map(([jid, jml]) => ({ jenis: jenisNama(jid), jumlah: jml }));
+  }, [stokMasukManual, jenisList]);
+  const totalProduksi = stokMasukManual.reduce((a, t) => a + t.jumlah, 0);
+
+  const returPerJenis = useMemo(() => {
+    const map = {};
     for (const d of distSelesaiLokasiRange.concat(resellerSelesaiRange)) {
       for (const it of d.items) map[it.jenisId] = (map[it.jenisId] || 0) + it.jumlahRetur;
     }
     return Object.entries(map).map(([jid, jml]) => ({ jenis: jenisNama(jid), jumlah: jml }));
-  }, [stokMasukManual, distSelesaiLokasiRange, resellerSelesaiRange, jenisList]);
-  const totalMasukSemua = totalMasuk + distSelesaiLokasiRange.concat(resellerSelesaiRange).reduce((a, d) => a + d.items.reduce((a2, it) => a2 + it.jumlahRetur, 0), 0);
+  }, [distSelesaiLokasiRange, resellerSelesaiRange, jenisList]);
+  const totalRetur = distSelesaiLokasiRange.concat(resellerSelesaiRange).reduce((a, d) => a + d.items.reduce((a2, it) => a2 + it.jumlahRetur, 0), 0);
+
+  const totalMasukSemua = totalProduksi + totalRetur; // dipakai sbg cek kondisi umum kalau diperlukan nanti
+  const stokMasukPerJenis = produksiPerJenis; // dipakai di beberapa tempat lama, sekarang = produksi murni
+
+  // Stok keluar — breakdown per kategori (buat CSV/PDF) + total gabungan keseluruhan (buat kartu di app)
+  const totalKeluarPcsJual = filteredTransaksi.filter((t) => t.tipe === 'keluar' && (t.kategoriKeluar || 'jual') === 'jual').reduce((a, t) => a + t.jumlah, 0);
+  const totalKeluarPcsPengeluaran = filteredTransaksi.filter((t) => t.tipe === 'keluar' && t.kategoriKeluar === 'pengeluaran').reduce((a, t) => a + t.jumlah, 0);
+  const totalKeluarPcsLainnya = filteredTransaksi.filter((t) => t.tipe === 'keluar' && t.kategoriKeluar === 'lainnya').reduce((a, t) => a + t.jumlah, 0);
+  const totalKeluarDistribusi = distSelesaiLokasiRange.concat(resellerSelesaiRange).reduce((a, d) => a + d.items.reduce((a2, it) => a2 + (it.jumlahDibawa - it.jumlahRetur), 0), 0);
+  const totalKeluarSemua = totalKeluarPcsJual; // dipakai di tempat lama (kalau ada) — murni jualan manual
+  const totalKeluarSemuaGabungan = totalKeluarPcsJual + totalKeluarPcsPengeluaran + totalKeluarPcsLainnya + totalKeluarDistribusi;
+
+  const totalKeluarPerJenisGabungan = useMemo(() => {
+    const map = {};
+    for (const t of filteredTransaksi.filter((t) => t.tipe === 'keluar')) map[t.jenisId] = (map[t.jenisId] || 0) + t.jumlah;
+    for (const d of distSelesaiLokasiRange.concat(resellerSelesaiRange)) {
+      for (const it of d.items) map[it.jenisId] = (map[it.jenisId] || 0) + (it.jumlahDibawa - it.jumlahRetur);
+    }
+    return Object.entries(map).map(([jid, jml]) => ({ jenis: jenisNama(jid), jumlah: jml }));
+  }, [filteredTransaksi, distSelesaiLokasiRange, resellerSelesaiRange, jenisList]);
+  const totalKeluarPerJenis = totalKeluarPerJenisGabungan; // alias dipakai di beberapa tempat lama
+
 
   const filteredDistribusi = useMemo(
     () => (distribusiList || []).filter((d) => d.waktuMulai >= range.start && d.waktuMulai < range.end).sort((a, b) => a.waktuMulai - b.waktuMulai),
@@ -1822,18 +1873,19 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
       ]);
     });
     rows.push([]);
-    rows.push(['=== PENGELUARAN ===']);
-    rows.push(['Tanggal', 'Keterangan', 'Jumlah', 'Dicatat Oleh']);
+    rows.push(['=== KAS LAIN (Pengeluaran & Pemasukan non-jualan) ===']);
+    rows.push(['Tanggal', 'Tipe', 'Keterangan', 'Jumlah', 'Dicatat Oleh']);
     filteredPengeluaran.forEach((p) => {
-      rows.push([new Date(p.waktu).toLocaleString('id-ID'), p.deskripsi, p.jumlah, p.dicatatOleh || '']);
+      rows.push([new Date(p.waktu).toLocaleString('id-ID'), p.tipe === 'masuk' ? 'Pemasukan' : 'Pengeluaran', p.deskripsi, p.jumlah, p.dicatatOleh || '']);
     });
     rows.push([]);
     rows.push(['=== DISTRIBUSI TITIK JUAL SENDIRI (ikut masuk ke Total Pendapatan) ===']);
-    rows.push(['Tanggal Selesai', 'Tujuan', 'Status', 'Varian', 'Dibawa', 'Retur', 'Terjual', 'Est. Pendapatan', 'Catatan Mulai', 'Catatan Selesai', 'Dicatat Oleh']);
+    rows.push(['Tanggal Mulai', 'Tanggal Selesai', 'Tujuan', 'Status', 'Varian', 'Dibawa', 'Retur', 'Terjual', 'Est. Pendapatan', 'Catatan Mulai', 'Catatan Selesai', 'Dicatat Oleh']);
     filteredDistribusi.filter((d) => d.tujuanTipe === 'lokasi').forEach((d) => {
-      d.items.forEach((it) => {
+      d.items.forEach((it, idx) => {
         const terjual = it.jumlahDibawa - it.jumlahRetur;
         rows.push([
+          new Date(d.waktuMulai).toLocaleString('id-ID'),
           d.waktuSelesai ? new Date(d.waktuSelesai).toLocaleString('id-ID') : '(belum selesai)',
           d.tujuanNama,
           d.status,
@@ -1842,20 +1894,21 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
           it.jumlahRetur,
           terjual,
           terjual * (it.hargaSatuan || 0),
-          d.catatanMulai || '',
-          d.catatanSelesai || '',
+          idx === 0 ? (d.catatanMulai || '') : '',
+          idx === 0 ? (d.catatanSelesai || '') : '',
           d.dicatatOleh || '',
         ]);
       });
     });
     rows.push([]);
     rows.push(['=== DISTRIBUSI RESELLER (ikut Total Pendapatan HANYA jika harga ke reseller sudah diisi saat itu) ===']);
-    rows.push(['Tanggal Selesai', 'Nama Reseller', 'Status', 'Varian', 'Dibawa', 'Retur', 'Terjual', 'Harga ke Reseller (saat itu)', 'Est. Pendapatan', 'Catatan Mulai', 'Catatan Selesai', 'Dicatat Oleh']);
+    rows.push(['Tanggal Mulai', 'Tanggal Selesai', 'Nama Reseller', 'Status', 'Varian', 'Dibawa', 'Retur', 'Terjual', 'Harga ke Reseller (saat itu)', 'Est. Pendapatan', 'Catatan Mulai', 'Catatan Selesai', 'Dicatat Oleh']);
     filteredDistribusi.filter((d) => d.tujuanTipe === 'reseller').forEach((d) => {
-      d.items.forEach((it) => {
+      d.items.forEach((it, idx) => {
         const terjual = it.jumlahDibawa - it.jumlahRetur;
         const harga = d.hargaKeResellerSnapshot;
         rows.push([
+          new Date(d.waktuMulai).toLocaleString('id-ID'),
           d.waktuSelesai ? new Date(d.waktuSelesai).toLocaleString('id-ID') : '(belum selesai)',
           d.tujuanNama,
           d.status,
@@ -1865,8 +1918,8 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
           terjual,
           harga || 'belum diatur',
           harga ? terjual * harga : 0,
-          d.catatanMulai || '',
-          d.catatanSelesai || '',
+          idx === 0 ? (d.catatanMulai || '') : '',
+          idx === 0 ? (d.catatanSelesai || '') : '',
           d.dicatatOleh || '',
         ]);
       });
@@ -1876,6 +1929,7 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
     rows.push(['Total pendapatan (semua)', totalPendapatan]);
     rows.push(['- Langsung + titik jual sendiri', totalPendapatanLangsungDanTitikJual]);
     rows.push(['- Distribusi reseller', resellerInfoRange.totalPendapatan]);
+    rows.push(['Pemasukan lain (non-jualan)', totalMasukLain]);
     rows.push(['Total pengeluaran', totalPengeluaran]);
     rows.push(['Untung bersih', untungBersih]);
     rows.push([]);
@@ -1883,8 +1937,19 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
     rows.push(['QRIS (termasuk counting distribusi)', totalQris]);
     rows.push(['Metode tidak tercatat (dari distribusi)', totalTidakTercatat]);
     rows.push([]);
-    rows.push(['Total stok masuk (manual + retur distribusi)', totalMasukSemua]);
-    stokMasukPerJenis.forEach(({ jenis, jumlah }) => rows.push([`- ${jenis}`, jumlah]));
+    rows.push(['Total stok keluar keseluruhan (semua kategori + distribusi)', totalKeluarSemuaGabungan]);
+    rows.push(['- Jualan langsung (manual)', totalKeluarPcsJual]);
+    rows.push(['- Terjual via Distribusi', totalKeluarDistribusi]);
+    rows.push(['- Pengeluaran (manual)', totalKeluarPcsPengeluaran]);
+    rows.push(['- Lainnya (manual)', totalKeluarPcsLainnya]);
+    rows.push(['Per jenis (total semua kategori):', '']);
+    totalKeluarPerJenisGabungan.forEach(({ jenis, jumlah }) => rows.push([`- ${jenis}`, jumlah]));
+    rows.push([]);
+    rows.push(['Total produksi (stok masuk manual)', totalProduksi]);
+    produksiPerJenis.forEach(({ jenis, jumlah }) => rows.push([`- ${jenis}`, jumlah]));
+    rows.push([]);
+    rows.push(['Total retur distribusi (BUKAN produksi baru)', totalRetur]);
+    returPerJenis.forEach(({ jenis, jumlah }) => rows.push([`- ${jenis}`, jumlah]));
 
     const csv = rows.map((r) => r.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
@@ -1913,13 +1978,20 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
         ['Total pendapatan (semua)', formatRupiah(totalPendapatan)],
         ['  - Langsung + titik jual sendiri', formatRupiah(totalPendapatanLangsungDanTitikJual)],
         ['  - Distribusi reseller', formatRupiah(resellerInfoRange.totalPendapatan)],
+        ['Pemasukan lain (non-jualan)', formatRupiah(totalMasukLain)],
         ['Total pengeluaran', formatRupiah(totalPengeluaran)],
         ['Untung bersih', formatRupiah(untungBersih)],
         ['Cash (termasuk counting distribusi)', formatRupiah(totalCash)],
         ['QRIS (termasuk counting distribusi)', formatRupiah(totalQris)],
         ['Metode tidak tercatat', formatRupiah(totalTidakTercatat)],
-        ['Total stok masuk (manual + retur distribusi)', String(totalMasukSemua)],
-        ['Total pcs terjual (langsung)', String(totalKeluarPcs)],
+        ['Total stok keluar keseluruhan (semua kategori + distribusi)', String(totalKeluarSemuaGabungan)],
+        ['  - Jualan langsung (manual)', String(totalKeluarPcsJual)],
+        ['  - Terjual via Distribusi', String(totalKeluarDistribusi)],
+        ['  - Pengeluaran (manual)', String(totalKeluarPcsPengeluaran)],
+        ['  - Lainnya (manual)', String(totalKeluarPcsLainnya)],
+        ...totalKeluarPerJenisGabungan.map(({ jenis, jumlah }) => [`  - Per jenis: ${jenis}`, String(jumlah)]),
+        ['Total produksi (stok masuk manual)', String(totalProduksi)],
+        ['Total retur distribusi', String(totalRetur)],
       ],
       theme: 'grid',
       headStyles: { fillColor: [240, 160, 75] },
@@ -1974,12 +2046,13 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
       y = doc.lastAutoTable.finalY + 10;
       doc.setFontSize(9);
       doc.setTextColor(192, 57, 43);
-      doc.text('Pengeluaran', 14, y);
+      doc.text('Kas Lain (Pengeluaran & Pemasukan non-jualan)', 14, y);
       autoTable(doc, {
         startY: y + 4,
-        head: [['Tanggal', 'Keterangan', 'Jumlah', 'Oleh']],
+        head: [['Tanggal', 'Tipe', 'Keterangan', 'Jumlah', 'Oleh']],
         body: filteredPengeluaran.map((p) => [
           new Date(p.waktu).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }),
+          p.tipe === 'masuk' ? 'Pemasukan' : 'Pengeluaran',
           p.deskripsi,
           formatRupiah(p.jumlah),
           p.dicatatOleh || '-',
@@ -1998,10 +2071,11 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
       doc.text('Distribusi Titik Jual Sendiri (nilai ini IKUT masuk ke Total Pendapatan)', 14, y);
       autoTable(doc, {
         startY: y + 4,
-        head: [['Tanggal', 'Tujuan', 'Varian', 'Dibawa', 'Retur', 'Terjual', 'Est. Pendapatan', 'Catatan']],
-        body: distLokasi.flatMap((d) => d.items.map((it) => {
+        head: [['Mulai', 'Selesai', 'Tujuan', 'Varian', 'Dibawa', 'Retur', 'Terjual', 'Est. Pendapatan', 'Catatan']],
+        body: distLokasi.flatMap((d) => d.items.map((it, idx) => {
           const terjual = it.jumlahDibawa - it.jumlahRetur;
           return [
+            new Date(d.waktuMulai).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }),
             d.waktuSelesai ? new Date(d.waktuSelesai).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }) : 'Berjalan',
             d.tujuanNama,
             `${jenisNama(it.jenisId)} - ${it.varian}`,
@@ -2009,7 +2083,7 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
             it.jumlahRetur,
             terjual,
             formatRupiah(terjual * (it.hargaSatuan || 0)),
-            [d.catatanMulai, d.catatanSelesai].filter(Boolean).join(' / ') || '-',
+            idx === 0 ? ([d.catatanMulai, d.catatanSelesai].filter(Boolean).join(' / ') || '-') : '',
           ];
         })),
         theme: 'striped',
@@ -2026,11 +2100,12 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
       doc.text('Distribusi Reseller (ikut Total Pendapatan hanya jika harga sudah diisi saat itu)', 14, y);
       autoTable(doc, {
         startY: y + 4,
-        head: [['Tanggal', 'Reseller', 'Varian', 'Dibawa', 'Retur', 'Terjual', 'Est. Pendapatan', 'Catatan']],
-        body: distReseller.flatMap((d) => d.items.map((it) => {
+        head: [['Mulai', 'Selesai', 'Reseller', 'Varian', 'Dibawa', 'Retur', 'Terjual', 'Est. Pendapatan', 'Catatan']],
+        body: distReseller.flatMap((d) => d.items.map((it, idx) => {
           const terjual = it.jumlahDibawa - it.jumlahRetur;
           const harga = d.hargaKeResellerSnapshot;
           return [
+            new Date(d.waktuMulai).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }),
             d.waktuSelesai ? new Date(d.waktuSelesai).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }) : 'Berjalan',
             d.tujuanNama,
             `${jenisNama(it.jenisId)} - ${it.varian}`,
@@ -2038,7 +2113,7 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
             it.jumlahRetur,
             terjual,
             harga ? formatRupiah(terjual * harga) : 'belum ada harga',
-            [d.catatanMulai, d.catatanSelesai].filter(Boolean).join(' / ') || '-',
+            idx === 0 ? ([d.catatanMulai, d.catatanSelesai].filter(Boolean).join(' / ') || '-') : '',
           ];
         })),
         theme: 'striped',
@@ -2087,6 +2162,9 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
         <div style={styles.untungRow}><span>Total pendapatan (semua)</span><strong style={{ color: '#2E7D5B' }}>{formatRupiah(totalPendapatan)}</strong></div>
         <div style={styles.untungRow}><span style={{ paddingLeft: 10 }}>· Langsung + titik jual sendiri</span><strong>{formatRupiah(totalPendapatanLangsungDanTitikJual)}</strong></div>
         <div style={styles.untungRow}><span style={{ paddingLeft: 10 }}>· Distribusi reseller</span><strong>{formatRupiah(resellerInfoRange.totalPendapatan)}</strong></div>
+        {totalMasukLain > 0 && (
+          <div style={styles.untungRow}><span>Pemasukan lain (non-jualan)</span><strong style={{ color: '#2E7D5B' }}>+{formatRupiah(totalMasukLain)}</strong></div>
+        )}
         <div style={styles.untungRow}><span>Total pengeluaran</span><strong style={{ color: '#C0392B' }}>-{formatRupiah(totalPengeluaran)}</strong></div>
         <div style={{ ...styles.untungRow, borderTop: '1px solid #EFDFC8', paddingTop: 8, marginTop: 4 }}>
           <span style={{ fontWeight: 700 }}>Untung bersih</span>
@@ -2105,11 +2183,32 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
         </div>
       )}
 
-      {totalMasukSemua > 0 && (
+      {totalKeluarSemuaGabungan > 0 && (
         <div style={styles.untungCard}>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: '#8A6D4E', marginBottom: 8 }}>Stok masuk (manual + retur distribusi)</div>
-          <div style={styles.untungRow}><span style={{ fontWeight: 700 }}>Total semua</span><strong>{totalMasukSemua} pcs</strong></div>
-          {stokMasukPerJenis.map(({ jenis, jumlah }) => (
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: '#8A6D4E', marginBottom: 8 }}>Stok Keluar Keseluruhan (semua kategori + distribusi)</div>
+          <div style={styles.untungRow}><span style={{ fontWeight: 700 }}>Total semua</span><strong>{totalKeluarSemuaGabungan} pcs</strong></div>
+          {totalKeluarPerJenisGabungan.map(({ jenis, jumlah }) => (
+            <div key={jenis} style={{ ...styles.untungRow, paddingLeft: 10 }}><span>· {jenis}</span><strong>{jumlah} pcs</strong></div>
+          ))}
+          <div style={{ fontSize: 10.5, color: '#B08968', marginTop: 6 }}>Rincian per kategori (Jualan/Pengeluaran/Lainnya/Distribusi) ada di file PDF & CSV.</div>
+        </div>
+      )}
+
+      {totalProduksi > 0 && (
+        <div style={styles.untungCard}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: '#8A6D4E', marginBottom: 8 }}>Produksi (stok masuk manual — murni produksi hari ini)</div>
+          <div style={styles.untungRow}><span style={{ fontWeight: 700 }}>Total semua</span><strong>{totalProduksi} pcs</strong></div>
+          {produksiPerJenis.map(({ jenis, jumlah }) => (
+            <div key={jenis} style={{ ...styles.untungRow, paddingLeft: 10 }}><span>· {jenis}</span><strong>{jumlah} pcs</strong></div>
+          ))}
+        </div>
+      )}
+
+      {totalRetur > 0 && (
+        <div style={styles.untungCard}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: '#8A6D4E', marginBottom: 8 }}>Retur Distribusi (kembali dari titik jual/reseller, BUKAN produksi baru)</div>
+          <div style={styles.untungRow}><span style={{ fontWeight: 700 }}>Total semua</span><strong>{totalRetur} pcs</strong></div>
+          {returPerJenis.map(({ jenis, jumlah }) => (
             <div key={jenis} style={{ ...styles.untungRow, paddingLeft: 10 }}><span>· {jenis}</span><strong>{jumlah} pcs</strong></div>
           ))}
         </div>
@@ -2214,7 +2313,8 @@ function DistribusiCard({ d, jenisList, countingList, onClick, selesai }) {
         </div>
       </div>
       <div style={styles.distCardMeta}>
-        {new Date(d.waktuMulai).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })}
+        Mulai {new Date(d.waktuMulai).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })}
+        {selesai && d.waktuSelesai && <> · Selesai {new Date(d.waktuSelesai).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })}</>}
         {' · '}Dibawa {totalDibawa} pcs
         {selesai && <> · Retur {totalRetur} pcs · Terjual {totalDibawa - totalRetur} pcs</>}
         {!selesai && d.tujuanTipe === 'lokasi' && totalCountingRupiah > 0 && <> · Tercatat {formatRupiah(totalCountingRupiah)}</>}
@@ -2390,7 +2490,11 @@ function DetailDistribusiModal({ d, jenisList, countingList, onClose, onTambahCo
         <div style={styles.modalHeader}>
           <div>
             <div style={styles.modalTitle}>{d.tujuanNama}</div>
-            <div style={styles.modalSub}>{isBerjalan ? 'Distribusi berjalan' : 'Sudah ditutup'}</div>
+            <div style={styles.modalSub}>
+              Mulai {new Date(d.waktuMulai).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}
+              {!isBerjalan && d.waktuSelesai && <> · Selesai {new Date(d.waktuSelesai).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}</>}
+              {isBerjalan && ' · Masih berjalan'}
+            </div>
           </div>
           <button style={styles.closeBtn} onClick={onClose}><X size={18} /></button>
         </div>
@@ -2399,13 +2503,29 @@ function DetailDistribusiModal({ d, jenisList, countingList, onClose, onTambahCo
           <div style={styles.catatanBox}><strong>Catatan saat mulai:</strong> {d.catatanMulai}</div>
         )}
 
-        <div style={styles.sectionLabel}>Dibawa</div>
-        {d.items.map((it) => (
-          <div key={it.id} style={styles.kelolaVarianRow}>
-            <div style={styles.kelolaVarianNama}>{jenisNama(it.jenisId)} - {it.varian}</div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: '#3A2618' }}>{it.jumlahDibawa} pcs</div>
-          </div>
-        ))}
+        {isBerjalan ? (
+          <>
+            <div style={styles.sectionLabel}>Dibawa</div>
+            {d.items.map((it) => (
+              <div key={it.id} style={styles.kelolaVarianRow}>
+                <div style={styles.kelolaVarianNama}>{jenisNama(it.jenisId)} - {it.varian}</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#3A2618' }}>{it.jumlahDibawa} pcs</div>
+              </div>
+            ))}
+          </>
+        ) : (
+          <>
+            <div style={styles.sectionLabel}>Dibawa / Retur / Terjual</div>
+            {d.items.map((it) => (
+              <div key={it.id} style={styles.kelolaVarianRow}>
+                <div style={styles.kelolaVarianNama}>{jenisNama(it.jenisId)} - {it.varian}</div>
+                <div style={{ fontSize: 11.5, color: '#B08968' }}>
+                  Dibawa {it.jumlahDibawa} · Retur {it.jumlahRetur} · <strong style={{ color: '#2E7D5B' }}>Terjual {it.jumlahDibawa - it.jumlahRetur}</strong>
+                </div>
+              </div>
+            ))}
+          </>
+        )}
 
         {d.tujuanTipe === 'lokasi' && (
           <>
@@ -2519,19 +2639,8 @@ function DetailDistribusiModal({ d, jenisList, countingList, onClose, onTambahCo
           </>
         )}
 
-        {!isBerjalan && (
-          <>
-            <div style={{ ...styles.sectionLabel, marginTop: 14 }}>Retur & Terjual</div>
-            {d.items.map((it) => (
-              <div key={it.id} style={styles.kelolaVarianRow}>
-                <div style={styles.kelolaVarianNama}>{jenisNama(it.jenisId)} - {it.varian}</div>
-                <div style={{ fontSize: 12, color: '#B08968' }}>Retur {it.jumlahRetur} · Terjual {it.jumlahDibawa - it.jumlahRetur}</div>
-              </div>
-            ))}
-            {d.catatanSelesai && (
-              <div style={{ ...styles.catatanBox, marginTop: 10 }}><strong>Catatan penutupan:</strong> {d.catatanSelesai}</div>
-            )}
-          </>
+        {!isBerjalan && d.catatanSelesai && (
+          <div style={{ ...styles.catatanBox, marginTop: 10 }}><strong>Catatan penutupan:</strong> {d.catatanSelesai}</div>
         )}
       </div>
     </div>
