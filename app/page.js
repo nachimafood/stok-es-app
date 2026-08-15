@@ -37,18 +37,26 @@ function hitungPendapatanReseller(distribusiList, pembayaranResellerList, rangeS
     if (d.tujuanTipe !== 'reseller') continue;
     const semuaPembayaran = (pembayaranResellerList || []).filter((p) => p.distribusiId === d.id);
 
-    if (semuaPembayaran.length > 0) {
+    // Tentukan sumber pendapatan yang dipakai:
+    // - Kalau eksplisit dipilih pas nutup ('pembayaran' atau 'retur'), ikuti itu SELAMANYA — gak berubah lagi.
+    // - Kalau belum pernah dipilih (distribusi masih berjalan, ATAU data lama sebelum fitur ini ada) →
+    //   pakai Catat Pembayaran kalau ada catatannya, atau anggap 0 dulu (belum kehitung) sampai ditutup.
+    const pakaiPembayaran =
+      d.sumberPendapatanReseller === 'pembayaran' ||
+      (d.sumberPendapatanReseller == null && (d.status === 'berjalan' || semuaPembayaran.length > 0));
+
+    if (pakaiPembayaran) {
       const dalamRange = semuaPembayaran.filter((p) => p.waktu >= rangeStart && p.waktu < rangeEnd);
       const totalPendapatan = dalamRange.reduce((a, p) => a + p.jumlah, 0);
       if (totalPendapatan > 0) {
         perDistribusi.push({ id: d.id, tujuanNama: d.tujuanNama, waktu: dalamRange[0]?.waktu, totalPendapatan, belumAdaHarga: false, sumberPembayaran: true });
       }
-      continue; // distribusi ini sudah pakai mode Catat Pembayaran, gak fallback ke cara lama sama sekali
+      continue;
     }
 
-    if (d.status !== 'selesai') continue; // belum ditutup & belum ada catatan pembayaran → belum dihitung
+    // Sumber retur (dipilih eksplisit pas nutup, ATAU data lama tanpa Catat Pembayaran sama sekali)
+    if (d.status !== 'selesai') continue;
     if (!(d.waktuSelesai >= rangeStart && d.waktuSelesai < rangeEnd)) continue;
-
     const hargaKeReseller = d.hargaKeResellerSnapshot;
     const totalTerjual = d.items.reduce((a, it) => a + (it.jumlahDibawa - it.jumlahRetur), 0);
     if (!hargaKeReseller) {
@@ -354,6 +362,7 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
           hargaKeResellerSnapshot: d.harga_ke_reseller_snapshot,
           catatanMulai: d.catatan_mulai,
           catatanSelesai: d.catatan_selesai,
+          sumberPendapatanReseller: d.sumber_pendapatan_reseller,
           items: (distItemRows || [])
             .filter((it) => it.distribusi_id === d.id)
             .map((it) => ({
@@ -447,6 +456,7 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
   };
 
   const hapusPengeluaran = async (id) => {
+    if (!window.confirm('Yakin hapus catatan kas ini? Data lama gak bisa dikembalikan lagi.')) return;
     setPengeluaran((prev) => prev.filter((p) => p.id !== id));
     const { error } = await supabase.from('pengeluaran').delete().eq('id', id).eq('team_code', teamCode);
     setSaveError(!!error);
@@ -563,22 +573,26 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
   };
 
   const hapusCounting = async (id) => {
+    if (!window.confirm('Yakin hapus catatan uang masuk ini? Data lama gak bisa dikembalikan lagi.')) return;
     setCountingList((prev) => prev.filter((c) => c.id !== id));
     const { error } = await supabase.from('counting').delete().eq('id', id).eq('team_code', teamCode);
     setSaveError(!!error);
   };
 
-  const tutupDistribusi = async (distribusiId, returMap, catatanSelesai) => {
+  const tutupDistribusi = async (distribusiId, returMap, catatanSelesai, sumberPendapatanReseller) => {
     // returMap: { itemId: jumlahRetur }
     setDistribusiList((prev) => prev.map((d) => (
       d.id === distribusiId
-        ? { ...d, status: 'selesai', waktuSelesai: Date.now(), catatanSelesai: catatanSelesai || null, items: d.items.map((it) => ({ ...it, jumlahRetur: returMap[it.id] ?? it.jumlahRetur })) }
+        ? { ...d, status: 'selesai', waktuSelesai: Date.now(), catatanSelesai: catatanSelesai || null, sumberPendapatanReseller: sumberPendapatanReseller ?? null, items: d.items.map((it) => ({ ...it, jumlahRetur: returMap[it.id] ?? it.jumlahRetur })) }
         : d
     )));
     const updates = Object.entries(returMap).map(([itemId, jumlahRetur]) =>
       supabase.from('distribusi_item').update({ jumlah_retur: jumlahRetur }).eq('id', itemId).eq('team_code', teamCode)
     );
-    const { error: eStatus } = await supabase.from('distribusi').update({ status: 'selesai', waktu_selesai: Date.now(), catatan_selesai: catatanSelesai || null }).eq('id', distribusiId).eq('team_code', teamCode);
+    const { error: eStatus } = await supabase.from('distribusi').update({
+      status: 'selesai', waktu_selesai: Date.now(), catatan_selesai: catatanSelesai || null,
+      sumber_pendapatan_reseller: sumberPendapatanReseller ?? null,
+    }).eq('id', distribusiId).eq('team_code', teamCode);
     const results = await Promise.all(updates);
     setSaveError(!!eStatus || results.some((r) => r.error));
   };
@@ -592,6 +606,7 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
   };
 
   const hapusPembayaranReseller = async (id) => {
+    if (!window.confirm('Yakin hapus catatan pembayaran ini? Data lama gak bisa dikembalikan lagi.')) return;
     setPembayaranResellerList((prev) => prev.filter((p) => p.id !== id));
     const { error } = await supabase.from('pembayaran_reseller').delete().eq('id', id).eq('team_code', teamCode);
     setSaveError(!!error);
@@ -2011,6 +2026,7 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
     rows.push(['Tanggal', 'Nama Reseller', 'Jumlah', 'Metode', 'Catatan', 'Dicatat Oleh']);
     pembayaranResellerList
       .filter((p) => p.waktu >= range.start && p.waktu < range.end)
+      .sort((a, b) => a.waktu - b.waktu)
       .forEach((p) => {
         const dist = (distribusiList || []).find((d) => d.id === p.distribusiId);
         rows.push([
@@ -2224,7 +2240,7 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
       });
     }
 
-    const pembayaranDalamRange = pembayaranResellerList.filter((p) => p.waktu >= range.start && p.waktu < range.end);
+    const pembayaranDalamRange = pembayaranResellerList.filter((p) => p.waktu >= range.start && p.waktu < range.end).sort((a, b) => a.waktu - b.waktu);
     if (pembayaranDalamRange.length > 0) {
       y = doc.lastAutoTable.finalY + 10;
       doc.setFontSize(9);
@@ -2424,7 +2440,7 @@ function DistribusiView({ jenisList, stokMap, resellerList, outletList, distribu
           onTambahCounting={onTambahCounting}
           onUpdateCounting={onUpdateCounting}
           onHapusCounting={onHapusCounting}
-          onTutup={(returMap, catatanSelesai) => { onTutup(openDist.id, returMap, catatanSelesai); setOpenDist(null); }}
+          onTutup={(returMap, catatanSelesai, pendapatanFinal) => { onTutup(openDist.id, returMap, catatanSelesai, pendapatanFinal); setOpenDist(null); }}
           onTambahPembayaranReseller={onTambahPembayaranReseller}
           onHapusPembayaranReseller={onHapusPembayaranReseller}
           onUpdateCatatanReturSementara={onUpdateCatatanReturSementara}
@@ -2602,6 +2618,7 @@ function DetailDistribusiModal({ d, jenisList, countingList, pembayaranResellerL
   const [bayarNominal, setBayarNominal] = useState('');
   const [bayarMetode, setBayarMetode] = useState('Cash');
   const [bayarCatatan, setBayarCatatan] = useState('');
+  const [pakaiCatatPembayaran, setPakaiCatatPembayaran] = useState(false);
   const [editingCatatanMulai, setEditingCatatanMulai] = useState(false);
   const [catatanMulaiVal, setCatatanMulaiVal] = useState(d.catatanMulai || '');
 
@@ -2674,6 +2691,9 @@ function DetailDistribusiModal({ d, jenisList, countingList, pembayaranResellerL
               onChange={(e) => setCatatanMulaiVal(e.target.value)}
               autoFocus
             />
+            <div style={{ fontSize: 10.5, color: '#B08968', marginTop: -8, marginBottom: 10 }}>
+              Ini menggantikan catatan lama sepenuhnya (bukan ditambah) — aman, cuma teks pengingat, gak ngaruh ke stok/pendapatan.
+            </div>
             <div style={{ display: 'flex', gap: 8 }}>
               <button style={{ ...styles.submitBtn, background: '#2E7D5B', padding: '8px', fontSize: 12.5 }} onClick={simpanCatatanMulai}>Simpan</button>
               <button style={{ ...styles.submitBtn, background: '#F0E4D4', color: '#8A6D4E', padding: '8px', fontSize: 12.5 }} onClick={() => setEditingCatatanMulai(false)}>Batal</button>
@@ -2848,10 +2868,13 @@ function DetailDistribusiModal({ d, jenisList, countingList, pembayaranResellerL
 
             <div style={styles.untungCard}>
               <div style={styles.untungRow}><span>Total terjual (estimasi dari sisa di atas)</span><strong>{totalTerjualEstimasi} pcs</strong></div>
-              {isReseller && totalSudahDibayar > 0 ? (
-                <div style={styles.untungRow}><span style={{ fontWeight: 700 }}>Total sudah dibayar (ini yang jadi pendapatan)</span><strong style={{ color: '#2E7D5B' }}>{formatRupiah(totalSudahDibayar)}</strong></div>
+              {isReseller ? (
+                <>
+                  <div style={styles.untungRow}><span>Kalau pakai hitungan retur × harga</span><strong>{formatRupiah(totalPendapatanEstimasi)}</strong></div>
+                  <div style={styles.untungRow}><span>Kalau pakai Catat Pembayaran</span><strong>{formatRupiah(totalSudahDibayar)}</strong></div>
+                </>
               ) : (
-                <div style={styles.untungRow}><span>Estimasi pendapatan{isReseller ? ' (kalau belum ada Catat Pembayaran)' : ''}</span><strong>{formatRupiah(totalPendapatanEstimasi)}</strong></div>
+                <div style={styles.untungRow}><span>Estimasi pendapatan</span><strong>{formatRupiah(totalPendapatanEstimasi)}</strong></div>
               )}
               {!isReseller && totalCountingRupiah > 0 && (
                 <>
@@ -2866,9 +2889,31 @@ function DetailDistribusiModal({ d, jenisList, countingList, pembayaranResellerL
               )}
             </div>
 
+            {isReseller && totalSudahDibayar > 0 && (
+              <button
+                style={styles.checkboxRow}
+                onClick={() => setPakaiCatatPembayaran((v) => !v)}
+              >
+                <div style={{ ...styles.checkboxBox, ...(pakaiCatatPembayaran ? styles.checkboxBoxChecked : {}) }}>
+                  {pakaiCatatPembayaran && <CheckCircle2 size={13} color="#fff" />}
+                </div>
+                <span>Pakai total Catat Pembayaran ({formatRupiah(totalSudahDibayar)}) sebagai pendapatan</span>
+              </button>
+            )}
+            {isReseller && !pakaiCatatPembayaran && (
+              <div style={styles.warningBanner}>
+                <AlertTriangle size={14} style={{ marginRight: 6, flexShrink: 0 }} />
+                Pakai hitungan retur ({formatRupiah(totalPendapatanEstimasi)}). Kalau sebelumnya sudah ada Catat Pembayaran tercatat di tanggal lain, angka itu akan digantikan sepenuhnya oleh angka ini di tanggal penutupan — bukan ditambah.
+              </div>
+            )}
+
             <button
               style={{ ...styles.submitBtn, background: '#2E7D5B', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
-              onClick={() => onTutup(Object.fromEntries(Object.entries(returVal).map(([k, v]) => [k, parseInt(v, 10) || 0])), catatanSelesai.trim() || null)}
+              onClick={() => {
+                const returFinal = Object.fromEntries(Object.entries(returVal).map(([k, v]) => [k, parseInt(v, 10) || 0]));
+                const sumberPendapatan = isReseller ? (pakaiCatatPembayaran ? 'pembayaran' : 'retur') : null;
+                onTutup(returFinal, catatanSelesai.trim() || null, sumberPendapatan);
+              }}
             >
               <CheckCircle2 size={16} /> Konfirmasi & Kembalikan ke Stok
             </button>
@@ -3050,6 +3095,16 @@ const styles = {
     display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', background: '#F0E4D4',
     color: '#8A6D4E', borderRadius: 10, padding: '10px', fontSize: 12.5, fontWeight: 600, marginBottom: 10,
   },
+  checkboxRow: {
+    display: 'flex', alignItems: 'center', gap: 10, width: '100%', background: '#fff', borderRadius: 12,
+    padding: '12px 14px', marginBottom: 10, fontSize: 13, color: '#3A2618', textAlign: 'left',
+    boxShadow: '0 1px 3px rgba(58,38,24,0.06)',
+  },
+  checkboxBox: {
+    width: 20, height: 20, borderRadius: 6, border: '2px solid #D9C4A8', flexShrink: 0,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+  },
+  checkboxBoxChecked: { background: '#2E7D5B', borderColor: '#2E7D5B' },
   kategoriBadge: {
     display: 'inline-block', marginLeft: 6, fontSize: 9.5, fontWeight: 700, color: '#C0862E',
     background: '#FFF0DC', borderRadius: 8, padding: '1px 6px', verticalAlign: 1,
