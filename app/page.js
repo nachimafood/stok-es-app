@@ -22,6 +22,23 @@ function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
 
+// Supabase/PostgREST membatasi maksimal 1000 baris per query secara default.
+// Kalau jumlah baris tabel sudah lewat itu, sisanya kepotong diam-diam tanpa error.
+// Fungsi ini narik SEMUA baris dengan cara membaca per-1000 baris berulang kali.
+async function fetchAll(queryBuilderFn) {
+  const PAGE_SIZE = 1000;
+  let from = 0;
+  let all = [];
+  while (true) {
+    const { data, error } = await queryBuilderFn().range(from, from + PAGE_SIZE - 1);
+    if (error) return { data: null, error };
+    all = all.concat(data || []);
+    if (!data || data.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+  return { data: all, error: null };
+}
+
 function formatRupiah(n) {
   return 'Rp' + n.toLocaleString('id-ID');
 }
@@ -238,15 +255,15 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
     try {
       const r1 = await supabase.from('jenis_es').select('*').eq('team_code', teamCode).order('id', { ascending: true });
       const r2 = await supabase.from('varian_es').select('*').eq('team_code', teamCode).order('id', { ascending: true });
-      const r3 = await supabase.from('transaksi').select('*').eq('team_code', teamCode).order('waktu', { ascending: false });
+      const r3 = await fetchAll(() => supabase.from('transaksi').select('*').eq('team_code', teamCode).order('waktu', { ascending: false }));
       const r4 = await supabase.from('pengeluaran').select('*').eq('team_code', teamCode).order('waktu', { ascending: false });
       const r5 = await supabase.from('reseller').select('*').eq('team_code', teamCode);
-      const r6 = await supabase.from('distribusi').select('*').eq('team_code', teamCode).order('waktu_mulai', { ascending: false });
-      const r7 = await supabase.from('distribusi_item').select('*').eq('team_code', teamCode);
-      const r8 = await supabase.from('counting').select('*').eq('team_code', teamCode).order('waktu', { ascending: false });
+      const r6 = await fetchAll(() => supabase.from('distribusi').select('*').eq('team_code', teamCode).order('waktu_mulai', { ascending: false }));
+      const r7 = await fetchAll(() => supabase.from('distribusi_item').select('*').eq('team_code', teamCode).order('id', { ascending: true }));
+      const r8 = await fetchAll(() => supabase.from('counting').select('*').eq('team_code', teamCode).order('waktu', { ascending: false }));
       const r9 = await supabase.from('outlet').select('*').eq('team_code', teamCode);
       const r10 = await supabase.from('kategori_varian').select('*').eq('team_code', teamCode).order('id', { ascending: true });
-      const r11 = await supabase.from('pembayaran_reseller').select('*').eq('team_code', teamCode).order('waktu', { ascending: false });
+      const r11 = await fetchAll(() => supabase.from('pembayaran_reseller').select('*').eq('team_code', teamCode).order('waktu', { ascending: false }));
 
       const firstErr = r1.error || r2.error || r3.error || r4.error || r5.error || r6.error || r7.error || r8.error || r9.error || r10.error || r11.error;
       if (firstErr) {
@@ -555,8 +572,27 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
       items: itemRows.map((r) => ({ id: r.id, jenisId: r.jenis_id, varian: r.varian_nama, jumlahDibawa: r.jumlah_dibawa, jumlahRetur: 0, hargaSatuan: r.harga_satuan })),
     }, ...prev]);
     const { error: e1 } = await supabase.from('distribusi').insert(distRow);
-    const { error: e2 } = await supabase.from('distribusi_item').insert(itemRows);
-    setSaveError(!!(e1 || e2));
+    if (e1) { setSaveError(true); return; }
+
+    // Insert item-item dengan retry (maks 3x) — sebelumnya kalau ini gagal sekali
+    // saja (koneksi lag dsb), baris distribusi di atas nyisa jadi "0 pcs" selamanya.
+    let e2 = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const res = await supabase.from('distribusi_item').insert(itemRows);
+      e2 = res.error;
+      if (!e2) break;
+      await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+    }
+    if (e2) {
+      // Item tetap gagal setelah 3x percobaan: rollback baris distribusi
+      // supaya tidak nyisa "hantu" 0 pcs, dan kasih tahu user secara jelas.
+      await supabase.from('distribusi').delete().eq('id', distId).eq('team_code', teamCode);
+      setDistribusiList((prev) => prev.filter((d) => d.id !== distId));
+      setSaveError(true);
+      window.alert('Gagal menyimpan distribusi setelah beberapa kali percobaan. Coba lagi — pastikan koneksi internet stabil.');
+      return;
+    }
+    setSaveError(false);
   };
 
   const tambahCounting = async (distribusiId, jumlahRupiah, metodeBayar) => {
