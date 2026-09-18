@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
-import { Plus, Minus, Package, TrendingUp, TrendingDown, MapPin, Clock, X, ChevronDown, Trash2, Loader2, Wallet, LogOut, Lock, Receipt, CircleSlash, Banknote, QrCode, FileDown, Calendar, User, Pencil, Truck, Users, RotateCcw, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { Plus, Minus, Package, TrendingUp, TrendingDown, MapPin, Clock, X, ChevronDown, Trash2, Loader2, Wallet, LogOut, Lock, Receipt, CircleSlash, Banknote, QrCode, FileDown, Calendar, User, Pencil, Truck, Users, RotateCcw, CheckCircle2, AlertTriangle, Landmark } from 'lucide-react';
 
 const LOKASI_OPTIONS = ['Alun-alun Kidul Pagi', 'Alun-alun Kidul Sore', 'Rumah'];
 
@@ -97,27 +97,30 @@ function hitungPendapatanDistribusi(distribusiList, countingList) {
     // Total pendapatan = jumlah terjual (dibawa-retur) × harga snapshot per varian — ini angka pasti (ground truth)
     const totalPendapatan = d.items.reduce((a, it) => a + (it.jumlahDibawa - it.jumlahRetur) * (it.hargaSatuan || 0), 0);
 
-    // Cash/QRIS = dari counting (uang yang dicatat tim saat jualan), sisanya (kalau ada) masuk "tidak tercatat"
+    // Cash/QRIS/Transfer = dari counting (uang yang dicatat tim saat jualan), sisanya (kalau ada) masuk "tidak tercatat"
     const countingIni = countingList.filter((c) => c.distribusiId === d.id);
-    let cash = 0, qris = 0;
+    let cash = 0, qris = 0, transfer = 0;
     for (const c of countingIni) {
       const rp = c.jumlahRupiah || 0;
-      if (c.metodeBayar === 'QRIS') qris += rp; else cash += rp;
+      if (c.metodeBayar === 'QRIS') qris += rp;
+      else if (c.metodeBayar === 'Transfer') transfer += rp;
+      else cash += rp;
     }
-    const totalCounting = cash + qris;
+    const totalCounting = cash + qris + transfer;
     const tidakTercatat = Math.max(0, totalPendapatan - totalCounting);
 
     perDistribusi.push({
       id: d.id, tujuanNama: d.tujuanNama, waktu: d.waktuSelesai,
-      totalPendapatan, cash, qris, tidakTercatat,
+      totalPendapatan, cash, qris, transfer, tidakTercatat,
     });
   }
   const grand = perDistribusi.reduce((acc, x) => ({
     totalPendapatan: acc.totalPendapatan + x.totalPendapatan,
     cash: acc.cash + x.cash,
     qris: acc.qris + x.qris,
+    transfer: acc.transfer + x.transfer,
     tidakTercatat: acc.tidakTercatat + x.tidakTercatat,
-  }), { totalPendapatan: 0, cash: 0, qris: 0, tidakTercatat: 0 });
+  }), { totalPendapatan: 0, cash: 0, qris: 0, transfer: 0, tidakTercatat: 0 });
   return { perDistribusi, ...grand };
 }
 
@@ -259,7 +262,7 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
       const r4 = await supabase.from('pengeluaran').select('*').eq('team_code', teamCode).order('waktu', { ascending: false });
       const r5 = await supabase.from('reseller').select('*').eq('team_code', teamCode);
       const r6 = await fetchAll(() => supabase.from('distribusi').select('*').eq('team_code', teamCode).order('waktu_mulai', { ascending: false }));
-      const r7 = await fetchAll(() => supabase.from('distribusi_item').select('*').eq('team_code', teamCode).order('id', { ascending: true }));
+      const r7 = await fetchAll(() => supabase.from('distribusi_item').select('*').eq('team_code', teamCode));
       const r8 = await fetchAll(() => supabase.from('counting').select('*').eq('team_code', teamCode).order('waktu', { ascending: false }));
       const r9 = await supabase.from('outlet').select('*').eq('team_code', teamCode);
       const r10 = await supabase.from('kategori_varian').select('*').eq('team_code', teamCode).order('id', { ascending: true });
@@ -1224,6 +1227,12 @@ function TransaksiModal({ info, onClose, onSubmit, outletList }) {
               >
                 <QrCode size={13} style={{ marginRight: 5, verticalAlign: -2 }} />QRIS
               </button>
+              <button
+                onClick={() => setMetodeBayar('Transfer')}
+                style={{ ...styles.lokasiChip, ...(metodeBayar === 'Transfer' ? styles.lokasiChipActive : {}) }}
+              >
+                <Landmark size={13} style={{ marginRight: 5, verticalAlign: -2 }} />Transfer
+              </button>
             </div>
           </>
         )}
@@ -1309,6 +1318,7 @@ function PendapatanView({ transaksi, pengeluaran, distribusiList, countingList, 
 
   const totalCash = useMemo(() => keluar.filter((t) => t.metodeBayar === 'Cash').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0), [keluar]) + distInfoAll.cash;
   const totalQris = useMemo(() => keluar.filter((t) => t.metodeBayar === 'QRIS').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0), [keluar]) + distInfoAll.qris;
+  const totalTransfer = useMemo(() => keluar.filter((t) => t.metodeBayar === 'Transfer').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0), [keluar]) + distInfoAll.transfer;
   const totalTidakTercatat = distInfoAll.tidakTercatat;
 
   if (keluar.length === 0 && distSelesai.length === 0) {
@@ -1351,7 +1361,7 @@ function PendapatanView({ transaksi, pengeluaran, distribusiList, countingList, 
         </div>
       </div>
 
-      {(totalCash > 0 || totalQris > 0 || totalTidakTercatat > 0) && (
+      {(totalCash > 0 || totalQris > 0 || totalTransfer > 0 || totalTidakTercatat > 0) && (
         <>
           <div style={styles.sectionLabel}>Total berdasarkan metode bayar</div>
           <div style={styles.lokasiRevRow}>
@@ -1361,6 +1371,10 @@ function PendapatanView({ transaksi, pengeluaran, distribusiList, countingList, 
           <div style={styles.lokasiRevRow}>
             <div style={styles.lokasiRevName}><QrCode size={13} style={{ marginRight: 4, verticalAlign: -2 }} />QRIS</div>
             <div style={styles.lokasiRevValue}>{formatRupiah(totalQris)}</div>
+          </div>
+          <div style={styles.lokasiRevRow}>
+            <div style={styles.lokasiRevName}><Landmark size={13} style={{ marginRight: 4, verticalAlign: -2 }} />Transfer</div>
+            <div style={styles.lokasiRevValue}>{formatRupiah(totalTransfer)}</div>
           </div>
           {totalTidakTercatat > 0 && (
             <div style={styles.lokasiRevRow}>
@@ -1912,13 +1926,30 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
 
   const totalPendapatanLangsungDanTitikJual = totalPendapatanLangsung + distInfoRange.totalPendapatan;
   const totalPendapatan = totalPendapatanLangsungDanTitikJual + resellerInfoRange.totalPendapatan;
+
+  // Rincian per titik jual (gabung Penjualan Langsung + Titik jual sendiri kalau nama titiknya sama)
+  // Khusus rentang tanggal yang lagi dipilih — TIDAK termasuk reseller (itu tetap baris terpisah).
+  const perTitikJualRange = useMemo(() => {
+    const map = {};
+    for (const t of filteredTransaksi) {
+      if (t.tipe !== 'keluar' || (t.kategoriKeluar || 'jual') !== 'jual') continue;
+      const loc = t.lokasi || 'Tanpa titik jual';
+      map[loc] = (map[loc] || 0) + t.jumlah * (t.hargaSatuan || 0);
+    }
+    for (const pd of distInfoRange.perDistribusi) {
+      map[pd.tujuanNama] = (map[pd.tujuanNama] || 0) + pd.totalPendapatan;
+    }
+    return Object.entries(map).filter(([, total]) => total > 0).sort((a, b) => b[1] - a[1]);
+  }, [filteredTransaksi, distInfoRange]);
   const untungBersih = totalPendapatan + totalMasukLain - totalPengeluaran;
 
   // Breakdown Cash/QRIS/Tidak tercatat — dari transaksi langsung (metode bayar) + counting distribusi
   const totalCashLangsung = filteredTransaksi.filter((t) => t.tipe === 'keluar' && (t.kategoriKeluar || 'jual') === 'jual' && t.metodeBayar === 'Cash').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0);
   const totalQrisLangsung = filteredTransaksi.filter((t) => t.tipe === 'keluar' && (t.kategoriKeluar || 'jual') === 'jual' && t.metodeBayar === 'QRIS').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0);
+  const totalTransferLangsung = filteredTransaksi.filter((t) => t.tipe === 'keluar' && (t.kategoriKeluar || 'jual') === 'jual' && t.metodeBayar === 'Transfer').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0);
   const totalCash = totalCashLangsung + distInfoRange.cash;
   const totalQris = totalQrisLangsung + distInfoRange.qris;
+  const totalTransfer = totalTransferLangsung + distInfoRange.transfer;
   const totalTidakTercatat = distInfoRange.tidakTercatat;
 
   // Stok masuk: PRODUKSI MURNI (manual) dan RETUR DISTRIBUSI dipisah — biar gak nyampur ke info produksi harian
@@ -2078,6 +2109,9 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
     rows.push(['=== RINGKASAN ===']);
     rows.push(['Total pendapatan (semua)', totalPendapatan]);
     rows.push(['- Langsung + titik jual sendiri', totalPendapatanLangsungDanTitikJual]);
+    perTitikJualRange.forEach(([loc, total]) => {
+      rows.push([`  · ${loc}`, total]);
+    });
     rows.push(['- Distribusi reseller', resellerInfoRange.totalPendapatan]);
     rows.push(['Pemasukan lain (non-jualan)', totalMasukLain]);
     rows.push(['Total pengeluaran', totalPengeluaran]);
@@ -2085,6 +2119,7 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
     rows.push([]);
     rows.push(['Cash (termasuk counting distribusi)', totalCash]);
     rows.push(['QRIS (termasuk counting distribusi)', totalQris]);
+    rows.push(['Transfer (termasuk counting distribusi)', totalTransfer]);
     rows.push(['Metode tidak tercatat (dari distribusi)', totalTidakTercatat]);
     rows.push([]);
     rows.push(['Total stok keluar keseluruhan (semua kategori + distribusi)', totalKeluarSemuaGabungan]);
@@ -2127,12 +2162,14 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
       body: [
         ['Total pendapatan (semua)', formatRupiah(totalPendapatan)],
         ['  - Langsung + titik jual sendiri', formatRupiah(totalPendapatanLangsungDanTitikJual)],
+        ...perTitikJualRange.map(([loc, total]) => [`      · ${loc}`, formatRupiah(total)]),
         ['  - Distribusi reseller', formatRupiah(resellerInfoRange.totalPendapatan)],
         ['Pemasukan lain (non-jualan)', formatRupiah(totalMasukLain)],
         ['Total pengeluaran', formatRupiah(totalPengeluaran)],
         ['Untung bersih', formatRupiah(untungBersih)],
         ['Cash (termasuk counting distribusi)', formatRupiah(totalCash)],
         ['QRIS (termasuk counting distribusi)', formatRupiah(totalQris)],
+        ['Transfer (termasuk counting distribusi)', formatRupiah(totalTransfer)],
         ['Metode tidak tercatat', formatRupiah(totalTidakTercatat)],
         ['Total stok keluar keseluruhan (semua kategori + distribusi)', String(totalKeluarSemuaGabungan)],
         ['  - Jualan langsung (manual)', String(totalKeluarPcsJual)],
@@ -2341,6 +2378,12 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
         </div>
         <div style={styles.untungRow}><span>Total pendapatan (semua)</span><strong style={{ color: '#2E7D5B' }}>{formatRupiah(totalPendapatan)}</strong></div>
         <div style={styles.untungRow}><span style={{ paddingLeft: 10 }}>· Langsung + titik jual sendiri</span><strong>{formatRupiah(totalPendapatanLangsungDanTitikJual)}</strong></div>
+        {perTitikJualRange.map(([loc, total]) => (
+          <div key={loc} style={styles.untungRow}>
+            <span style={{ paddingLeft: 24, fontSize: 12, color: '#8A6D4E' }}><MapPin size={11} style={{ marginRight: 4, verticalAlign: -1 }} />{loc}</span>
+            <span style={{ fontSize: 12.5 }}>{formatRupiah(total)}</span>
+          </div>
+        ))}
         <div style={styles.untungRow}><span style={{ paddingLeft: 10 }}>· Distribusi reseller</span><strong>{formatRupiah(resellerInfoRange.totalPendapatan)}</strong></div>
         {totalMasukLain > 0 && (
           <div style={styles.untungRow}><span>Pemasukan lain (non-jualan)</span><strong style={{ color: '#2E7D5B' }}>+{formatRupiah(totalMasukLain)}</strong></div>
@@ -2352,11 +2395,12 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
         </div>
       </div>
 
-      {(totalCash > 0 || totalQris > 0 || totalTidakTercatat > 0) && (
+      {(totalCash > 0 || totalQris > 0 || totalTransfer > 0 || totalTidakTercatat > 0) && (
         <div style={styles.untungCard}>
           <div style={{ fontSize: 12.5, fontWeight: 700, color: '#8A6D4E', marginBottom: 8 }}>Metode bayar (termasuk counting distribusi)</div>
           <div style={styles.untungRow}><span><Banknote size={13} style={{ marginRight: 4, verticalAlign: -2 }} />Cash</span><strong>{formatRupiah(totalCash)}</strong></div>
           <div style={styles.untungRow}><span><QrCode size={13} style={{ marginRight: 4, verticalAlign: -2 }} />QRIS</span><strong>{formatRupiah(totalQris)}</strong></div>
+          <div style={styles.untungRow}><span><Landmark size={13} style={{ marginRight: 4, verticalAlign: -2 }} />Transfer</span><strong>{formatRupiah(totalTransfer)}</strong></div>
           {totalTidakTercatat > 0 && (
             <div style={{ ...styles.untungRow, color: '#C0862E' }}><span><AlertTriangle size={13} style={{ marginRight: 4, verticalAlign: -2 }} />Metode tidak tercatat</span><strong>{formatRupiah(totalTidakTercatat)}</strong></div>
           )}
@@ -2837,6 +2881,7 @@ function DetailDistribusiModal({ d, jenisList, countingList, pembayaranResellerL
                 <div style={{ ...styles.lokasiGrid, marginBottom: 10 }}>
                   <button onClick={() => setCountMetode('Cash')} style={{ ...styles.lokasiChip, ...(countMetode === 'Cash' ? styles.lokasiChipActive : {}) }}><Banknote size={13} style={{ marginRight: 4, verticalAlign: -2 }} />Cash</button>
                   <button onClick={() => setCountMetode('QRIS')} style={{ ...styles.lokasiChip, ...(countMetode === 'QRIS' ? styles.lokasiChipActive : {}) }}><QrCode size={13} style={{ marginRight: 4, verticalAlign: -2 }} />QRIS</button>
+                  <button onClick={() => setCountMetode('Transfer')} style={{ ...styles.lokasiChip, ...(countMetode === 'Transfer' ? styles.lokasiChipActive : {}) }}><Landmark size={13} style={{ marginRight: 4, verticalAlign: -2 }} />Transfer</button>
                   <button style={{ ...styles.addBtnSmall, width: 44 }} onClick={submitCounting}><Plus size={15} /></button>
                 </div>
 
