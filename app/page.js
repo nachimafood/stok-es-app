@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
-import { Plus, Minus, Package, TrendingUp, TrendingDown, MapPin, Clock, X, ChevronDown, Trash2, Loader2, Wallet, LogOut, Lock, Receipt, CircleSlash, Banknote, QrCode, FileDown, Calendar, User, Pencil, Truck, Users, RotateCcw, CheckCircle2, AlertTriangle, Landmark } from 'lucide-react';
+import { Plus, Minus, Package, TrendingUp, TrendingDown, MapPin, Clock, X, ChevronDown, Trash2, Loader2, Wallet, LogOut, Lock, Receipt, CircleSlash, Banknote, QrCode, FileDown, Calendar, User, Pencil, Truck, Users, RotateCcw, CheckCircle2, AlertTriangle, Landmark, ShoppingCart } from 'lucide-react';
 
 const LOKASI_OPTIONS = ['Alun-alun Kidul Pagi', 'Alun-alun Kidul Sore', 'Rumah'];
 
@@ -66,7 +66,13 @@ function hitungPendapatanReseller(distribusiList, pembayaranResellerList, rangeS
       const dalamRange = semuaPembayaran.filter((p) => p.waktu >= rangeStart && p.waktu < rangeEnd);
       const totalPendapatan = dalamRange.reduce((a, p) => a + p.jumlah, 0);
       if (totalPendapatan > 0) {
-        perDistribusi.push({ id: d.id, tujuanNama: d.tujuanNama, waktu: dalamRange[0]?.waktu, totalPendapatan, belumAdaHarga: false, sumberPembayaran: true });
+        // Rincian per metode bayar (Cash/QRIS/Transfer) khusus buat distribusi reseller ini
+        const metodeMap = {};
+        for (const p of dalamRange) {
+          const key = p.metodeBayar === 'QRIS' ? 'qris' : p.metodeBayar === 'Transfer' ? 'transfer' : 'cash';
+          metodeMap[key] = (metodeMap[key] || 0) + p.jumlah;
+        }
+        perDistribusi.push({ id: d.id, tujuanNama: d.tujuanNama, waktu: dalamRange[0]?.waktu, totalPendapatan, belumAdaHarga: false, sumberPembayaran: true, metodeMap });
       }
       continue;
     }
@@ -81,7 +87,7 @@ function hitungPendapatanReseller(distribusiList, pembayaranResellerList, rangeS
       continue;
     }
     const totalPendapatan = totalTerjual * hargaKeReseller;
-    perDistribusi.push({ id: d.id, tujuanNama: d.tujuanNama, waktu: d.waktuSelesai, totalPendapatan, belumAdaHarga: false, totalTerjual, sumberPembayaran: false });
+    perDistribusi.push({ id: d.id, tujuanNama: d.tujuanNama, waktu: d.waktuSelesai, totalPendapatan, belumAdaHarga: false, totalTerjual, sumberPembayaran: false, metodeMap: { tidak_tercatat: totalPendapatan } });
   }
   const totalPendapatan = perDistribusi.reduce((a, x) => a + x.totalPendapatan, 0);
   const adaBelumDiatur = perDistribusi.some((x) => x.belumAdaHarga);
@@ -232,6 +238,8 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
   const [pembayaranResellerList, setPembayaranResellerList] = useState(null);
   const [distribusiList, setDistribusiList] = useState(null);
   const [countingList, setCountingList] = useState(null);
+  const [keranjangList, setKeranjangList] = useState(null);
+  const [showKeranjangModal, setShowKeranjangModal] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saveError, setSaveError] = useState(false);
   const [loadFailMsg, setLoadFailMsg] = useState('');
@@ -290,6 +298,14 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
       return;
     }
 
+    // Keranjang: tabel baru, sengaja DIPISAH dari blok di atas — kalau tabelnya belum dibuat
+    // di Supabase (SQL belum dijalankan), fitur lain tetap jalan normal, cuma keranjang kosong.
+    let keranjangRows = [];
+    try {
+      const rk = await supabase.from('keranjang_item').select('*').eq('team_code', teamCode).order('waktu', { ascending: true });
+      if (!rk.error && rk.data) keranjangRows = rk.data;
+    } catch (e) { /* tabel belum ada — abaikan, keranjang tetap kosong */ }
+
     if (!jenisRows || jenisRows.length === 0) {
       // Seed default data for a brand-new team code
       const seedRows = [];
@@ -323,6 +339,9 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
       setDistribusiList([]);
       setCountingList([]);
       setKategoriList([]);
+      setKeranjangList(keranjangRows.map((k) => ({
+        id: k.id, jenisId: k.jenis_id, varianNama: k.varian_nama, hargaSatuan: k.harga_satuan, jumlah: k.jumlah, waktu: k.waktu,
+      })));
       setPembayaranResellerList([]);
     } else {
       const combined = jenisRows.map((j) => ({
@@ -421,6 +440,9 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
     }
 
     setKategoriList((kategoriRows || []).map((k) => ({ id: k.id, jenisId: k.jenis_id, nama: k.nama })));
+    setKeranjangList((keranjangRows || []).map((k) => ({
+      id: k.id, jenisId: k.jenis_id, varianNama: k.varian_nama, hargaSatuan: k.harga_satuan, jumlah: k.jumlah, waktu: k.waktu,
+    })));
     setPembayaranResellerList((pembayaranResellerRows || []).map((p) => ({
       id: p.id, distribusiId: p.distribusi_id, jumlah: p.jumlah, metodeBayar: p.metode_bayar,
       catatan: p.catatan, dicatatOleh: p.dicatat_oleh, waktu: p.waktu,
@@ -448,15 +470,54 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
       waktu: Date.now(),
       team_code: teamCode,
       dicatat_oleh: nama,
+      order_id: t.orderId || null,
+      nama_pelanggan: t.namaPelanggan || null,
     };
     // optimistic update
-    setTransaksi((prev) => [{ ...t, id: row.id, waktu: row.waktu, dicatatOleh: nama, kategoriKeluar: row.kategori_keluar }, ...prev]);
+    setTransaksi((prev) => [{ ...t, id: row.id, waktu: row.waktu, dicatatOleh: nama, kategoriKeluar: row.kategori_keluar, orderId: row.order_id, namaPelanggan: row.nama_pelanggan }, ...prev]);
     const { error } = await supabase.from('transaksi').insert(row);
     setSaveError(!!error);
 
     // Kalau stok keluar dikategorikan "pengeluaran", otomatis buat catatan pengeluaran terkait
     if (t.tipe === 'keluar' && t.kategoriKeluar === 'pengeluaran' && t.nominalPengeluaran > 0) {
       await tambahPengeluaran(t.catatan ? `Stok keluar: ${t.catatan}` : `Stok keluar (${t.varian})`, t.nominalPengeluaran, 'keluar');
+    }
+    return row.id;
+  };
+
+  // ---- Keranjang (draft pesanan, belum potong stok sampai checkout) ----
+  const tambahKeKeranjang = async (jenisId, varianNama, hargaSatuan, jumlah) => {
+    const row = { id: uid(), team_code: teamCode, jenis_id: jenisId, varian_nama: varianNama, harga_satuan: hargaSatuan, jumlah, waktu: Date.now(), dicatat_oleh: nama };
+    setKeranjangList((prev) => [...(prev || []), { id: row.id, jenisId, varianNama, hargaSatuan, jumlah, waktu: row.waktu }]);
+    const { error } = await supabase.from('keranjang_item').insert(row);
+    setSaveError(!!error);
+  };
+
+  const updateJumlahKeranjang = async (id, jumlahBaru) => {
+    setKeranjangList((prev) => prev.map((k) => (k.id === id ? { ...k, jumlah: jumlahBaru } : k)));
+    const { error } = await supabase.from('keranjang_item').update({ jumlah: jumlahBaru }).eq('id', id).eq('team_code', teamCode);
+    setSaveError(!!error);
+  };
+
+  const hapusItemKeranjang = async (id) => {
+    setKeranjangList((prev) => prev.filter((k) => k.id !== id));
+    const { error } = await supabase.from('keranjang_item').delete().eq('id', id).eq('team_code', teamCode);
+    setSaveError(!!error);
+  };
+
+  const checkoutKeranjang = async (items, lokasi, metodeBayar, namaPelanggan, catatan) => {
+    const orderId = uid();
+    for (const it of items) {
+      await tambahTransaksi({
+        jenisId: it.jenisId, varian: it.varianNama, tipe: 'keluar', jumlah: it.jumlah, hargaSatuan: it.hargaSatuan,
+        lokasi, metodeBayar, kategoriKeluar: 'jual', catatan: catatan || null, orderId, namaPelanggan: namaPelanggan || null,
+      });
+    }
+    // Kosongkan keranjang di server + lokal setelah semua item berhasil dipindah jadi transaksi resmi
+    setKeranjangList([]);
+    const ids = items.map((it) => it.id);
+    if (ids.length > 0) {
+      await supabase.from('keranjang_item').delete().in('id', ids).eq('team_code', teamCode);
     }
   };
 
@@ -768,7 +829,7 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
   return (
     <div style={styles.app}>
       <style>{globalCss}</style>
-      <Header saveError={saveError} isOffline={isOffline} onLogout={onLogout} onRetry={loadData} nama={nama} onGantiNama={onGantiNama} />
+      <Header saveError={saveError} isOffline={isOffline} onLogout={onLogout} onRetry={loadData} nama={nama} onGantiNama={onGantiNama} jumlahKeranjang={(keranjangList || []).length} onBukaKeranjang={() => setShowKeranjangModal(true)} />
       <div style={styles.tabBar}>
         <TabBtn active={tab === 'stok'} onClick={() => setTab('stok')} label="Stok" icon={<Package size={16} />} />
         <TabBtn active={tab === 'distribusi'} onClick={() => setTab('distribusi')} label="Distribusi" icon={<Truck size={16} />} />
@@ -780,7 +841,7 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
       </div>
 
       <div style={styles.content}>
-        {tab === 'stok' && <StokView jenisList={jenisList} kategoriList={kategoriList} stokMap={stokMap} onTambahTransaksi={tambahTransaksi} onToggleHabis={toggleHabis} outletList={outletList} />}
+        {tab === 'stok' && <StokView jenisList={jenisList} kategoriList={kategoriList} stokMap={stokMap} onTambahTransaksi={tambahTransaksi} onToggleHabis={toggleHabis} outletList={outletList} onAddToCart={tambahKeKeranjang} />}
         {tab === 'distribusi' && (
           <DistribusiView
             jenisList={jenisList}
@@ -845,11 +906,22 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
           />
         )}
       </div>
+
+      {showKeranjangModal && (
+        <KeranjangModal
+          keranjangList={keranjangList || []}
+          outletList={outletList}
+          onClose={() => setShowKeranjangModal(false)}
+          onUpdateJumlah={updateJumlahKeranjang}
+          onHapusItem={hapusItemKeranjang}
+          onCheckout={checkoutKeranjang}
+        />
+      )}
     </div>
   );
 }
 
-function Header({ saveError, isOffline, onLogout, onRetry, nama, onGantiNama }) {
+function Header({ saveError, isOffline, onLogout, onRetry, nama, onGantiNama, jumlahKeranjang, onBukaKeranjang }) {
   const [editingNama, setEditingNama] = useState(false);
   const [namaVal, setNamaVal] = useState(nama);
 
@@ -866,6 +938,16 @@ function Header({ saveError, isOffline, onLogout, onRetry, nama, onGantiNama }) 
           <div style={styles.headerTitle}>Stok Es</div>
           <div style={{ fontSize: 12, color: statusColor, marginTop: 2 }}>{statusText}</div>
         </div>
+        {jumlahKeranjang > 0 && (
+          <button style={{ ...styles.namaBtn, position: 'relative', padding: '6px 10px' }} onClick={onBukaKeranjang} aria-label="Buka keranjang">
+            <ShoppingCart size={16} />
+            <span style={{
+              position: 'absolute', top: -5, right: -5, background: '#C0392B', color: '#fff',
+              borderRadius: 999, fontSize: 10, fontWeight: 700, minWidth: 16, height: 16,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px',
+            }}>{jumlahKeranjang}</span>
+          </button>
+        )}
         <button style={styles.namaBtn} onClick={() => { setNamaVal(nama); setEditingNama(true); }} aria-label="Ganti nama pencatat">
           <User size={13} /> {nama} <Pencil size={11} />
         </button>
@@ -911,7 +993,7 @@ function TabBtn({ active, onClick, label, icon }) {
 }
 
 // ============ STOK VIEW ============
-function StokView({ jenisList, kategoriList, stokMap, onTambahTransaksi, onToggleHabis, outletList }) {
+function StokView({ jenisList, kategoriList, stokMap, onTambahTransaksi, onToggleHabis, outletList, onAddToCart }) {
   const [modal, setModal] = useState(null);
   const [search, setSearch] = useState('');
   const [openJenis, setOpenJenis] = useState(null);
@@ -1099,13 +1181,14 @@ function StokView({ jenisList, kategoriList, stokMap, onTambahTransaksi, onToggl
           outletList={outletList}
           onClose={() => setModal(null)}
           onSubmit={(payload) => { onTambahTransaksi(payload); setModal(null); }}
+          onAddToCart={onAddToCart}
         />
       )}
     </div>
   );
 }
 
-function TransaksiModal({ info, onClose, onSubmit, outletList }) {
+function TransaksiModal({ info, onClose, onSubmit, outletList, onAddToCart }) {
   const outletAktif = outletList.filter((o) => o.aktif !== false);
   const [jumlah, setJumlah] = useState('');
   const [lokasi, setLokasi] = useState(info.tipe === 'masuk' ? '' : (outletAktif[0]?.nama || ''));
@@ -1245,13 +1328,123 @@ function TransaksiModal({ info, onClose, onSubmit, outletList }) {
           onChange={(e) => setCatatan(e.target.value)}
         />
 
-        <button
-          style={{ ...styles.submitBtn, background: isMasuk ? '#2E7D5B' : '#C0392B', opacity: n > 0 ? 1 : 0.5 }}
-          onClick={submit}
-          disabled={!(n > 0)}
-        >
-          {isMasuk ? 'Catat stok masuk' : 'Catat stok keluar'}
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            style={{ ...styles.submitBtn, background: isMasuk ? '#2E7D5B' : '#C0392B', opacity: n > 0 ? 1 : 0.5 }}
+            onClick={submit}
+            disabled={!(n > 0)}
+          >
+            {isMasuk ? 'Catat stok masuk' : 'Catat stok keluar'}
+          </button>
+          {!isMasuk && kategoriKeluar === 'jual' && onAddToCart && (
+            <button
+              style={{ ...styles.submitBtn, flex: '0 0 52px', background: '#B08968', opacity: n > 0 ? 1 : 0.5 }}
+              onClick={() => { if (n > 0) { onAddToCart(info.jenisId, info.varian, info.harga, n); onClose(); } }}
+              disabled={!(n > 0)}
+              aria-label="Tambah ke keranjang"
+              title="Tambah ke keranjang (buat pesanan banyak varian)"
+            >
+              <ShoppingCart size={18} />
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============ KERANJANG MODAL ============
+// Draft pesanan multi-varian buat 1 pelanggan — item ditambah dari tombol keranjang di TransaksiModal.
+// Stok BELUM berkurang sampai tombol "Checkout" ditekan di sini.
+function KeranjangModal({ keranjangList, outletList, onClose, onUpdateJumlah, onHapusItem, onCheckout }) {
+  const outletAktif = outletList.filter((o) => o.aktif !== false);
+  const [lokasi, setLokasi] = useState(outletAktif[0]?.nama || '');
+  const [metodeBayar, setMetodeBayar] = useState('Cash');
+  const [namaPelanggan, setNamaPelanggan] = useState('');
+  const [catatan, setCatatan] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const totalHarga = keranjangList.reduce((a, k) => a + k.jumlah * k.hargaSatuan, 0);
+
+  const checkout = async () => {
+    if (keranjangList.length === 0 || busy) return;
+    setBusy(true);
+    await onCheckout(keranjangList, lokasi || null, metodeBayar, namaPelanggan.trim() || null, catatan.trim() || null);
+    setBusy(false);
+    onClose();
+  };
+
+  return (
+    <div style={styles.overlay} onClick={onClose}>
+      <div style={{ ...styles.modal, maxHeight: '85vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalHeader}>
+          <div>
+            <div style={styles.modalTitle}><ShoppingCart size={16} style={{ marginRight: 6, verticalAlign: -3 }} />Keranjang</div>
+            <div style={styles.modalSub}>{keranjangList.length} item — belum mengurangi stok sampai checkout</div>
+          </div>
+          <button style={styles.closeBtn} onClick={onClose}><X size={18} /></button>
+        </div>
+
+        {keranjangList.length === 0 ? (
+          <div style={{ padding: '20px 0', textAlign: 'center', color: '#B08968', fontSize: 13 }}>
+            Keranjang kosong. Tambah varian lewat tombol <ShoppingCart size={13} style={{ verticalAlign: -2 }} /> di layar Stok.
+          </div>
+        ) : (
+          <>
+            {keranjangList.map((k) => (
+              <div key={k.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: '1px solid #F0E4D4' }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{k.varianNama}</div>
+                  <div style={{ fontSize: 11.5, color: '#B08968' }}>{formatRupiah(k.hargaSatuan)}/pcs</div>
+                </div>
+                <button style={{ ...styles.roundBtn, width: 28, height: 28, background: '#F0E4D4', color: '#8A6D4E' }} onClick={() => onUpdateJumlah(k.id, Math.max(1, k.jumlah - 1))}><Minus size={13} /></button>
+                <div style={{ minWidth: 28, textAlign: 'center', fontSize: 13.5, fontWeight: 700 }}>{k.jumlah}</div>
+                <button style={{ ...styles.roundBtn, width: 28, height: 28, background: '#F0E4D4', color: '#8A6D4E' }} onClick={() => onUpdateJumlah(k.id, k.jumlah + 1)}><Plus size={13} /></button>
+                <div style={{ minWidth: 70, textAlign: 'right', fontSize: 13, fontWeight: 600 }}>{formatRupiah(k.jumlah * k.hargaSatuan)}</div>
+                <button style={{ ...styles.roundBtn, width: 28, height: 28, background: '#FCEEE3', color: '#C0392B' }} onClick={() => onHapusItem(k.id)}><Trash2 size={13} /></button>
+              </div>
+            ))}
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0', fontSize: 15, fontWeight: 700 }}>
+              <span>Total</span>
+              <span>{formatRupiah(totalHarga)}</span>
+            </div>
+
+            <label style={styles.fieldLabel}>Titik jual</label>
+            <div style={styles.lokasiGrid}>
+              {outletAktif.map((o) => (
+                <button key={o.id} onClick={() => setLokasi(o.nama)} style={{ ...styles.lokasiChip, ...(lokasi === o.nama ? styles.lokasiChipActive : {}) }}>{o.nama}</button>
+              ))}
+            </div>
+
+            <label style={styles.fieldLabel}>Metode bayar</label>
+            <div style={styles.lokasiGrid}>
+              <button onClick={() => setMetodeBayar('Cash')} style={{ ...styles.lokasiChip, ...(metodeBayar === 'Cash' ? styles.lokasiChipActive : {}) }}>
+                <Banknote size={13} style={{ marginRight: 5, verticalAlign: -2 }} />Cash
+              </button>
+              <button onClick={() => setMetodeBayar('QRIS')} style={{ ...styles.lokasiChip, ...(metodeBayar === 'QRIS' ? styles.lokasiChipActive : {}) }}>
+                <QrCode size={13} style={{ marginRight: 5, verticalAlign: -2 }} />QRIS
+              </button>
+              <button onClick={() => setMetodeBayar('Transfer')} style={{ ...styles.lokasiChip, ...(metodeBayar === 'Transfer' ? styles.lokasiChipActive : {}) }}>
+                <Landmark size={13} style={{ marginRight: 5, verticalAlign: -2 }} />Transfer
+              </button>
+            </div>
+
+            <label style={styles.fieldLabel}>Nama pelanggan (opsional)</label>
+            <input style={styles.input} placeholder="mis. Bu Sri" value={namaPelanggan} onChange={(e) => setNamaPelanggan(e.target.value)} />
+
+            <label style={styles.fieldLabel}>Catatan (opsional)</label>
+            <input style={styles.input} placeholder="mis. dikirim sore" value={catatan} onChange={(e) => setCatatan(e.target.value)} />
+
+            <button
+              style={{ ...styles.submitBtn, background: '#C0392B', opacity: busy ? 0.6 : 1, marginTop: 12 }}
+              onClick={checkout}
+              disabled={busy}
+            >
+              {busy ? 'Memproses...' : `Checkout — ${formatRupiah(totalHarga)}`}
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
@@ -1316,10 +1509,46 @@ function PendapatanView({ transaksi, pengeluaran, distribusiList, countingList, 
 
   const distInfoAll = useMemo(() => hitungPendapatanDistribusi(distSelesai, countingList), [distSelesai, countingList]);
 
-  const totalCash = useMemo(() => keluar.filter((t) => t.metodeBayar === 'Cash').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0), [keluar]) + distInfoAll.cash;
-  const totalQris = useMemo(() => keluar.filter((t) => t.metodeBayar === 'QRIS').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0), [keluar]) + distInfoAll.qris;
-  const totalTransfer = useMemo(() => keluar.filter((t) => t.metodeBayar === 'Transfer').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0), [keluar]) + distInfoAll.transfer;
-  const totalTidakTercatat = distInfoAll.tidakTercatat;
+  const asalPerMetodeAll = useMemo(() => {
+    const buckets = { cash: {}, qris: {}, transfer: {}, tidak_tercatat: {} };
+    const add = (bucket, sumber, jumlah) => {
+      if (!jumlah) return;
+      buckets[bucket][sumber] = (buckets[bucket][sumber] || 0) + jumlah;
+    };
+    for (const t of keluar) {
+      const key = t.metodeBayar === 'QRIS' ? 'qris' : t.metodeBayar === 'Transfer' ? 'transfer' : 'cash';
+      add(key, t.lokasi || 'Tanpa titik jual', t.jumlah * (t.hargaSatuan || 0));
+    }
+    for (const pd of distInfoAll.perDistribusi) {
+      add('cash', pd.tujuanNama, pd.cash);
+      add('qris', pd.tujuanNama, pd.qris);
+      add('transfer', pd.tujuanNama, pd.transfer);
+      add('tidak_tercatat', pd.tujuanNama, pd.tidakTercatat);
+    }
+    for (const pr of resellerInfoAll.perDistribusi) {
+      const label = `${pr.tujuanNama} (reseller)`;
+      const mm = pr.metodeMap || {};
+      add('cash', label, mm.cash || 0);
+      add('qris', label, mm.qris || 0);
+      add('transfer', label, mm.transfer || 0);
+      add('tidak_tercatat', label, mm.tidak_tercatat || 0);
+    }
+    const sortedEntries = (obj) => Object.entries(obj).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
+    return { cash: sortedEntries(buckets.cash), qris: sortedEntries(buckets.qris), transfer: sortedEntries(buckets.transfer), tidak_tercatat: sortedEntries(buckets.tidak_tercatat) };
+  }, [keluar, distInfoAll, resellerInfoAll]);
+
+  const resellerMetodeSumAll = useMemo(() => {
+    const acc = { cash: 0, qris: 0, transfer: 0, tidak_tercatat: 0 };
+    for (const pr of resellerInfoAll.perDistribusi) {
+      const mm = pr.metodeMap || {};
+      acc.cash += mm.cash || 0; acc.qris += mm.qris || 0; acc.transfer += mm.transfer || 0; acc.tidak_tercatat += mm.tidak_tercatat || 0;
+    }
+    return acc;
+  }, [resellerInfoAll]);
+  const totalCash = useMemo(() => keluar.filter((t) => t.metodeBayar === 'Cash').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0), [keluar]) + distInfoAll.cash + resellerMetodeSumAll.cash;
+  const totalQris = useMemo(() => keluar.filter((t) => t.metodeBayar === 'QRIS').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0), [keluar]) + distInfoAll.qris + resellerMetodeSumAll.qris;
+  const totalTransfer = useMemo(() => keluar.filter((t) => t.metodeBayar === 'Transfer').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0), [keluar]) + distInfoAll.transfer + resellerMetodeSumAll.transfer;
+  const totalTidakTercatat = distInfoAll.tidakTercatat + resellerMetodeSumAll.tidak_tercatat;
 
   if (keluar.length === 0 && distSelesai.length === 0) {
     return <EmptyState text="Belum ada penjualan tercatat. Pendapatan akan muncul setelah ada stok keluar atau distribusi selesai." />;
@@ -1368,19 +1597,45 @@ function PendapatanView({ transaksi, pengeluaran, distribusiList, countingList, 
             <div style={styles.lokasiRevName}><Banknote size={13} style={{ marginRight: 4, verticalAlign: -2 }} />Cash</div>
             <div style={styles.lokasiRevValue}>{formatRupiah(totalCash)}</div>
           </div>
+          {asalPerMetodeAll.cash.map(([sumber, jumlah]) => (
+            <div key={sumber} style={styles.lokasiRevRow}>
+              <div style={{ ...styles.lokasiRevName, paddingLeft: 20, fontSize: 12 }}>· {sumber}</div>
+              <div style={{ ...styles.lokasiRevValue, fontSize: 12.5 }}>{formatRupiah(jumlah)}</div>
+            </div>
+          ))}
           <div style={styles.lokasiRevRow}>
             <div style={styles.lokasiRevName}><QrCode size={13} style={{ marginRight: 4, verticalAlign: -2 }} />QRIS</div>
             <div style={styles.lokasiRevValue}>{formatRupiah(totalQris)}</div>
           </div>
+          {asalPerMetodeAll.qris.map(([sumber, jumlah]) => (
+            <div key={sumber} style={styles.lokasiRevRow}>
+              <div style={{ ...styles.lokasiRevName, paddingLeft: 20, fontSize: 12 }}>· {sumber}</div>
+              <div style={{ ...styles.lokasiRevValue, fontSize: 12.5 }}>{formatRupiah(jumlah)}</div>
+            </div>
+          ))}
           <div style={styles.lokasiRevRow}>
             <div style={styles.lokasiRevName}><Landmark size={13} style={{ marginRight: 4, verticalAlign: -2 }} />Transfer</div>
             <div style={styles.lokasiRevValue}>{formatRupiah(totalTransfer)}</div>
           </div>
-          {totalTidakTercatat > 0 && (
-            <div style={styles.lokasiRevRow}>
-              <div style={styles.lokasiRevName}><AlertTriangle size={13} style={{ marginRight: 4, verticalAlign: -2, color: '#C0862E' }} />Metode tidak tercatat (dari distribusi)</div>
-              <div style={{ ...styles.lokasiRevValue, color: '#C0862E' }}>{formatRupiah(totalTidakTercatat)}</div>
+          {asalPerMetodeAll.transfer.map(([sumber, jumlah]) => (
+            <div key={sumber} style={styles.lokasiRevRow}>
+              <div style={{ ...styles.lokasiRevName, paddingLeft: 20, fontSize: 12 }}>· {sumber}</div>
+              <div style={{ ...styles.lokasiRevValue, fontSize: 12.5 }}>{formatRupiah(jumlah)}</div>
             </div>
+          ))}
+          {totalTidakTercatat > 0 && (
+            <>
+              <div style={styles.lokasiRevRow}>
+                <div style={styles.lokasiRevName}><AlertTriangle size={13} style={{ marginRight: 4, verticalAlign: -2, color: '#C0862E' }} />Metode tidak tercatat (dari distribusi)</div>
+                <div style={{ ...styles.lokasiRevValue, color: '#C0862E' }}>{formatRupiah(totalTidakTercatat)}</div>
+              </div>
+              {asalPerMetodeAll.tidak_tercatat.map(([sumber, jumlah]) => (
+                <div key={sumber} style={styles.lokasiRevRow}>
+                  <div style={{ ...styles.lokasiRevName, paddingLeft: 20, fontSize: 12, color: '#C0862E' }}>· {sumber}</div>
+                  <div style={{ ...styles.lokasiRevValue, fontSize: 12.5, color: '#C0862E' }}>{formatRupiah(jumlah)}</div>
+                </div>
+              ))}
+            </>
           )}
         </>
       )}
@@ -1941,16 +2196,59 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
     }
     return Object.entries(map).filter(([, total]) => total > 0).sort((a, b) => b[1] - a[1]);
   }, [filteredTransaksi, distInfoRange]);
+
+  // Rincian asal per metode bayar (buat drill-down di kartu "Total berdasarkan metode bayar")
+  const asalPerMetode = useMemo(() => {
+    const buckets = { cash: {}, qris: {}, transfer: {}, tidak_tercatat: {} };
+    const add = (bucket, sumber, jumlah) => {
+      if (!jumlah) return;
+      buckets[bucket][sumber] = (buckets[bucket][sumber] || 0) + jumlah;
+    };
+    for (const t of filteredTransaksi) {
+      if (t.tipe !== 'keluar' || (t.kategoriKeluar || 'jual') !== 'jual') continue;
+      const key = t.metodeBayar === 'QRIS' ? 'qris' : t.metodeBayar === 'Transfer' ? 'transfer' : 'cash';
+      add(key, t.lokasi || 'Tanpa titik jual', t.jumlah * (t.hargaSatuan || 0));
+    }
+    for (const pd of distInfoRange.perDistribusi) {
+      add('cash', pd.tujuanNama, pd.cash);
+      add('qris', pd.tujuanNama, pd.qris);
+      add('transfer', pd.tujuanNama, pd.transfer);
+      add('tidak_tercatat', pd.tujuanNama, pd.tidakTercatat);
+    }
+    for (const pr of resellerInfoRange.perDistribusi) {
+      const label = `${pr.tujuanNama} (reseller)`;
+      const mm = pr.metodeMap || {};
+      add('cash', label, mm.cash || 0);
+      add('qris', label, mm.qris || 0);
+      add('transfer', label, mm.transfer || 0);
+      add('tidak_tercatat', label, mm.tidak_tercatat || 0);
+    }
+    const sortedEntries = (obj) => Object.entries(obj).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
+    return {
+      cash: sortedEntries(buckets.cash),
+      qris: sortedEntries(buckets.qris),
+      transfer: sortedEntries(buckets.transfer),
+      tidak_tercatat: sortedEntries(buckets.tidak_tercatat),
+    };
+  }, [filteredTransaksi, distInfoRange, resellerInfoRange]);
   const untungBersih = totalPendapatan + totalMasukLain - totalPengeluaran;
 
   // Breakdown Cash/QRIS/Tidak tercatat — dari transaksi langsung (metode bayar) + counting distribusi
   const totalCashLangsung = filteredTransaksi.filter((t) => t.tipe === 'keluar' && (t.kategoriKeluar || 'jual') === 'jual' && t.metodeBayar === 'Cash').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0);
   const totalQrisLangsung = filteredTransaksi.filter((t) => t.tipe === 'keluar' && (t.kategoriKeluar || 'jual') === 'jual' && t.metodeBayar === 'QRIS').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0);
   const totalTransferLangsung = filteredTransaksi.filter((t) => t.tipe === 'keluar' && (t.kategoriKeluar || 'jual') === 'jual' && t.metodeBayar === 'Transfer').reduce((a, t) => a + t.jumlah * (t.hargaSatuan || 0), 0);
-  const totalCash = totalCashLangsung + distInfoRange.cash;
-  const totalQris = totalQrisLangsung + distInfoRange.qris;
-  const totalTransfer = totalTransferLangsung + distInfoRange.transfer;
-  const totalTidakTercatat = distInfoRange.tidakTercatat;
+  const resellerMetodeSum = useMemo(() => {
+    const acc = { cash: 0, qris: 0, transfer: 0, tidak_tercatat: 0 };
+    for (const pr of resellerInfoRange.perDistribusi) {
+      const mm = pr.metodeMap || {};
+      acc.cash += mm.cash || 0; acc.qris += mm.qris || 0; acc.transfer += mm.transfer || 0; acc.tidak_tercatat += mm.tidak_tercatat || 0;
+    }
+    return acc;
+  }, [resellerInfoRange]);
+  const totalCash = totalCashLangsung + distInfoRange.cash + resellerMetodeSum.cash;
+  const totalQris = totalQrisLangsung + distInfoRange.qris + resellerMetodeSum.qris;
+  const totalTransfer = totalTransferLangsung + distInfoRange.transfer + resellerMetodeSum.transfer;
+  const totalTidakTercatat = distInfoRange.tidakTercatat + resellerMetodeSum.tidak_tercatat;
 
   // Stok masuk: PRODUKSI MURNI (manual) dan RETUR DISTRIBUSI dipisah — biar gak nyampur ke info produksi harian
   const stokMasukManual = filteredTransaksi.filter((t) => t.tipe === 'masuk');
@@ -2397,12 +2695,26 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
 
       {(totalCash > 0 || totalQris > 0 || totalTransfer > 0 || totalTidakTercatat > 0) && (
         <div style={styles.untungCard}>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: '#8A6D4E', marginBottom: 8 }}>Metode bayar (termasuk counting distribusi)</div>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: '#8A6D4E', marginBottom: 8 }}>Metode bayar (termasuk counting distribusi & reseller)</div>
           <div style={styles.untungRow}><span><Banknote size={13} style={{ marginRight: 4, verticalAlign: -2 }} />Cash</span><strong>{formatRupiah(totalCash)}</strong></div>
+          {asalPerMetode.cash.map(([sumber, jumlah]) => (
+            <div key={sumber} style={styles.untungRow}><span style={{ paddingLeft: 20, fontSize: 12, color: '#8A6D4E' }}>· {sumber}</span><span style={{ fontSize: 12.5 }}>{formatRupiah(jumlah)}</span></div>
+          ))}
           <div style={styles.untungRow}><span><QrCode size={13} style={{ marginRight: 4, verticalAlign: -2 }} />QRIS</span><strong>{formatRupiah(totalQris)}</strong></div>
+          {asalPerMetode.qris.map(([sumber, jumlah]) => (
+            <div key={sumber} style={styles.untungRow}><span style={{ paddingLeft: 20, fontSize: 12, color: '#8A6D4E' }}>· {sumber}</span><span style={{ fontSize: 12.5 }}>{formatRupiah(jumlah)}</span></div>
+          ))}
           <div style={styles.untungRow}><span><Landmark size={13} style={{ marginRight: 4, verticalAlign: -2 }} />Transfer</span><strong>{formatRupiah(totalTransfer)}</strong></div>
+          {asalPerMetode.transfer.map(([sumber, jumlah]) => (
+            <div key={sumber} style={styles.untungRow}><span style={{ paddingLeft: 20, fontSize: 12, color: '#8A6D4E' }}>· {sumber}</span><span style={{ fontSize: 12.5 }}>{formatRupiah(jumlah)}</span></div>
+          ))}
           {totalTidakTercatat > 0 && (
-            <div style={{ ...styles.untungRow, color: '#C0862E' }}><span><AlertTriangle size={13} style={{ marginRight: 4, verticalAlign: -2 }} />Metode tidak tercatat</span><strong>{formatRupiah(totalTidakTercatat)}</strong></div>
+            <>
+              <div style={{ ...styles.untungRow, color: '#C0862E' }}><span><AlertTriangle size={13} style={{ marginRight: 4, verticalAlign: -2 }} />Metode tidak tercatat</span><strong>{formatRupiah(totalTidakTercatat)}</strong></div>
+              {asalPerMetode.tidak_tercatat.map(([sumber, jumlah]) => (
+                <div key={sumber} style={styles.untungRow}><span style={{ paddingLeft: 20, fontSize: 12, color: '#C0862E' }}>· {sumber}</span><span style={{ fontSize: 12.5 }}>{formatRupiah(jumlah)}</span></div>
+              ))}
+            </>
           )}
         </div>
       )}
