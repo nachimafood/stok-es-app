@@ -367,6 +367,8 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
           kategoriKeluar: t.kategori_keluar || (t.tipe === 'keluar' ? 'jual' : null),
           waktu: t.waktu,
           dicatatOleh: t.dicatat_oleh,
+          orderId: t.order_id,
+          namaPelanggan: t.nama_pelanggan,
         }))
       );
       setPengeluaran(
@@ -1452,6 +1454,13 @@ function KeranjangModal({ keranjangList, outletList, onClose, onUpdateJumlah, on
 
 // ============ PENDAPATAN VIEW ============
 function PendapatanView({ transaksi, pengeluaran, distribusiList, countingList, pembayaranResellerList }) {
+  const [openMetode, setOpenMetode] = useState(new Set());
+  const toggleMetode = (key) => setOpenMetode((prev) => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+
   // Cuma stok keluar berkategori "jual" yang dihitung pendapatan (default "jual" untuk data lama tanpa kategori)
   const keluar = useMemo(() => transaksi.filter((t) => t.tipe === 'keluar' && (t.kategoriKeluar || 'jual') === 'jual'), [transaksi]);
 
@@ -1593,50 +1602,40 @@ function PendapatanView({ transaksi, pengeluaran, distribusiList, countingList, 
       {(totalCash > 0 || totalQris > 0 || totalTransfer > 0 || totalTidakTercatat > 0) && (
         <>
           <div style={styles.sectionLabel}>Total berdasarkan metode bayar</div>
-          <div style={styles.lokasiRevRow}>
-            <div style={styles.lokasiRevName}><Banknote size={13} style={{ marginRight: 4, verticalAlign: -2 }} />Cash</div>
-            <div style={styles.lokasiRevValue}>{formatRupiah(totalCash)}</div>
-          </div>
-          {asalPerMetodeAll.cash.map(([sumber, jumlah]) => (
-            <div key={sumber} style={styles.lokasiRevRow}>
-              <div style={{ ...styles.lokasiRevName, paddingLeft: 20, fontSize: 12 }}>· {sumber}</div>
-              <div style={{ ...styles.lokasiRevValue, fontSize: 12.5 }}>{formatRupiah(jumlah)}</div>
-            </div>
-          ))}
-          <div style={styles.lokasiRevRow}>
-            <div style={styles.lokasiRevName}><QrCode size={13} style={{ marginRight: 4, verticalAlign: -2 }} />QRIS</div>
-            <div style={styles.lokasiRevValue}>{formatRupiah(totalQris)}</div>
-          </div>
-          {asalPerMetodeAll.qris.map(([sumber, jumlah]) => (
-            <div key={sumber} style={styles.lokasiRevRow}>
-              <div style={{ ...styles.lokasiRevName, paddingLeft: 20, fontSize: 12 }}>· {sumber}</div>
-              <div style={{ ...styles.lokasiRevValue, fontSize: 12.5 }}>{formatRupiah(jumlah)}</div>
-            </div>
-          ))}
-          <div style={styles.lokasiRevRow}>
-            <div style={styles.lokasiRevName}><Landmark size={13} style={{ marginRight: 4, verticalAlign: -2 }} />Transfer</div>
-            <div style={styles.lokasiRevValue}>{formatRupiah(totalTransfer)}</div>
-          </div>
-          {asalPerMetodeAll.transfer.map(([sumber, jumlah]) => (
-            <div key={sumber} style={styles.lokasiRevRow}>
-              <div style={{ ...styles.lokasiRevName, paddingLeft: 20, fontSize: 12 }}>· {sumber}</div>
-              <div style={{ ...styles.lokasiRevValue, fontSize: 12.5 }}>{formatRupiah(jumlah)}</div>
-            </div>
-          ))}
-          {totalTidakTercatat > 0 && (
-            <>
-              <div style={styles.lokasiRevRow}>
-                <div style={styles.lokasiRevName}><AlertTriangle size={13} style={{ marginRight: 4, verticalAlign: -2, color: '#C0862E' }} />Metode tidak tercatat (dari distribusi)</div>
-                <div style={{ ...styles.lokasiRevValue, color: '#C0862E' }}>{formatRupiah(totalTidakTercatat)}</div>
+          {[
+            { key: 'cash', label: 'Cash', icon: <Banknote size={13} style={{ marginRight: 4, verticalAlign: -2 }} />, total: totalCash, sumber: asalPerMetodeAll.cash, color: '#3A2618' },
+            { key: 'qris', label: 'QRIS', icon: <QrCode size={13} style={{ marginRight: 4, verticalAlign: -2 }} />, total: totalQris, sumber: asalPerMetodeAll.qris, color: '#3A2618' },
+            { key: 'transfer', label: 'Transfer', icon: <Landmark size={13} style={{ marginRight: 4, verticalAlign: -2 }} />, total: totalTransfer, sumber: asalPerMetodeAll.transfer, color: '#3A2618' },
+            ...(totalTidakTercatat > 0 ? [{ key: 'tidak_tercatat', label: 'Metode tidak tercatat (dari distribusi)', icon: <AlertTriangle size={13} style={{ marginRight: 4, verticalAlign: -2 }} />, total: totalTidakTercatat, sumber: asalPerMetodeAll.tidak_tercatat, color: '#C0862E' }] : []),
+          ].map(({ key, label, icon, total, sumber, color }) => {
+            const isOpen = openMetode.has(key);
+            const bisaDibuka = sumber.length > 0;
+            return (
+              <div key={key} style={{ ...styles.metodeCard, borderColor: color === '#C0862E' ? '#F0D9B5' : '#F0E4D4' }}>
+                <button
+                  style={styles.metodeCardHeader}
+                  onClick={() => bisaDibuka && toggleMetode(key)}
+                  disabled={!bisaDibuka}
+                >
+                  <span style={{ color, display: 'flex', alignItems: 'center' }}>{icon}{label}</span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <strong style={{ color }}>{formatRupiah(total)}</strong>
+                    {bisaDibuka && <ChevronDown size={15} style={{ color: '#B08968', transform: isOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }} />}
+                  </span>
+                </button>
+                {isOpen && (
+                  <div style={styles.metodeCardBody}>
+                    {sumber.map(([nm, jumlah]) => (
+                      <div key={nm} style={styles.metodeCardBodyRow}>
+                        <span style={{ color: '#8A6D4E' }}>{nm}</span>
+                        <span style={{ fontWeight: 600 }}>{formatRupiah(jumlah)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-              {asalPerMetodeAll.tidak_tercatat.map(([sumber, jumlah]) => (
-                <div key={sumber} style={styles.lokasiRevRow}>
-                  <div style={{ ...styles.lokasiRevName, paddingLeft: 20, fontSize: 12, color: '#C0862E' }}>· {sumber}</div>
-                  <div style={{ ...styles.lokasiRevValue, fontSize: 12.5, color: '#C0862E' }}>{formatRupiah(jumlah)}</div>
-                </div>
-              ))}
-            </>
-          )}
+            );
+          })}
         </>
       )}
 
@@ -1772,6 +1771,7 @@ function RiwayatView({ transaksi, jenisList, onHapus }) {
               {t.lokasi && <> · <MapPin size={11} style={{ display: 'inline', verticalAlign: -1 }} /> {t.lokasi}</>}
               {t.tipe === 'keluar' && t.hargaSatuan ? <> · {formatRupiah(t.jumlah * t.hargaSatuan)}</> : null}
               {t.dicatatOleh ? <> · {t.dicatatOleh}</> : null}
+              {t.namaPelanggan ? <><br /><User size={11} style={{ display: 'inline', verticalAlign: -1 }} /> {t.namaPelanggan}</> : null}
               {t.catatan ? <><br />📝 {t.catatan}</> : null}
             </div>
           </div>
@@ -2315,7 +2315,7 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
     });
     rows.push([]);
     rows.push(['=== STOK KELUAR / PENJUALAN LANGSUNG (input manual di tab Stok) ===']);
-    rows.push(['Tanggal', 'Jenis', 'Varian', 'Jumlah', 'Harga Satuan', 'Total', 'Kategori', 'Titik Jual', 'Metode Bayar', 'Catatan', 'Dicatat Oleh']);
+    rows.push(['Tanggal', 'Jenis', 'Varian', 'Jumlah', 'Harga Satuan', 'Total', 'Kategori', 'Titik Jual', 'Metode Bayar', 'Nama Pelanggan', 'Catatan', 'Dicatat Oleh']);
     filteredTransaksi.filter((t) => t.tipe === 'keluar').forEach((t) => {
       const kategori = t.kategoriKeluar || 'jual';
       rows.push([
@@ -2328,6 +2328,7 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
         kategori === 'jual' ? 'Jualan' : kategori === 'pengeluaran' ? 'Pengeluaran' : 'Lainnya',
         t.lokasi || '',
         t.metodeBayar || '',
+        t.namaPelanggan || '',
         t.catatan || '',
         t.dicatatOleh || '',
       ]);
@@ -2511,6 +2512,7 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
       head: [['Tanggal', 'Produk', 'Jml', 'Total', 'Kategori', 'Lokasi/Bayar', 'Catatan', 'Oleh']],
       body: filteredTransaksi.filter((t) => t.tipe === 'keluar').map((t) => {
         const kat = t.kategoriKeluar || 'jual';
+        const catatanGabung = [t.namaPelanggan ? `Pelanggan: ${t.namaPelanggan}` : null, t.catatan].filter(Boolean).join(' — ');
         return [
           new Date(t.waktu).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }),
           `${jenisNama(t.jenisId)} - ${t.varian}`,
@@ -2518,7 +2520,7 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
           formatRupiah(t.jumlah * (t.hargaSatuan || 0)),
           kat === 'jual' ? 'Jualan' : kat === 'pengeluaran' ? 'Pengeluaran' : 'Lainnya',
           [t.lokasi, t.metodeBayar].filter(Boolean).join(' / ') || '-',
-          t.catatan || '-',
+          catatanGabung || '-',
           t.dicatatOleh || '-',
         ];
       }),
@@ -3440,6 +3442,20 @@ const styles = {
   },
   lokasiRevName: { fontSize: 13, color: '#3A2618', fontWeight: 600 },
   lokasiRevValue: { fontSize: 14, color: '#2E7D5B', fontWeight: 700 },
+  metodeCard: {
+    background: '#fff', borderRadius: 12, marginBottom: 8, boxShadow: '0 1px 3px rgba(58,38,24,0.06)',
+    border: '1px solid #F0E4D4', overflow: 'hidden',
+  },
+  metodeCardHeader: {
+    width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    background: 'transparent', border: 'none', padding: '12px 14px', fontSize: 13.5, fontWeight: 600,
+    cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit',
+  },
+  metodeCardBody: { padding: '0 14px 12px 14px', borderTop: '1px solid #F5EBDD' },
+  metodeCardBodyRow: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12.5,
+    padding: '8px 0 8px 20px', borderBottom: '1px solid #F8F1E7',
+  },
   riwayatRow: {
     display: 'flex', alignItems: 'center', gap: 10, background: '#fff', borderRadius: 14,
     padding: '10px 12px', marginBottom: 8, boxShadow: '0 1px 3px rgba(58,38,24,0.06)',
