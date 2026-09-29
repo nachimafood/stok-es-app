@@ -1602,8 +1602,8 @@ function PendapatanView({ transaksi, pengeluaran, distribusiList, countingList, 
       </div>
 
       {(totalCash > 0 || totalQris > 0 || totalTransfer > 0 || totalTidakTercatat > 0) && (
-        <>
-          <div style={styles.sectionLabel}>Total berdasarkan metode bayar</div>
+        <div style={styles.untungCard}>
+          <div style={{ ...styles.sectionLabel, marginTop: 0 }}>Total berdasarkan metode bayar</div>
           {[
             { key: 'cash', label: 'Cash', icon: <Banknote size={13} style={{ marginRight: 4, verticalAlign: -2 }} />, total: totalCash, sumber: asalPerMetodeAll.cash, color: '#3A2618' },
             { key: 'qris', label: 'QRIS', icon: <QrCode size={13} style={{ marginRight: 4, verticalAlign: -2 }} />, total: totalQris, sumber: asalPerMetodeAll.qris, color: '#3A2618' },
@@ -1639,7 +1639,7 @@ function PendapatanView({ transaksi, pengeluaran, distribusiList, countingList, 
               </div>
             );
           })}
-        </>
+        </div>
       )}
 
       <div style={styles.sectionLabel}>Pendapatan per titik jual (total)</div>
@@ -2604,7 +2604,7 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
       doc.text('Distribusi Reseller (pendapatan dari Catat Pembayaran kalau ada)', 14, y);
       autoTable(doc, {
         startY: y + 4,
-        head: [['Mulai', 'Selesai', 'Reseller', 'Varian', 'Dibawa', 'Retur', 'Terjual', 'Est. (fallback)', 'Bonus', 'Est. Setelah Bonus', 'Total Dibayar', 'Catatan']],
+        head: [['Mulai', 'Selesai', 'Reseller', 'Varian', 'Dibawa', 'Retur', 'Terjual', 'Est. (fallback)', 'Est. Setelah Bonus', 'Total Dibayar', 'Catatan']],
         body: distReseller.flatMap((d) => {
           const totalDibayarDistribusi = pembayaranResellerList.filter((p) => p.distribusiId === d.id).reduce((a, p) => a + p.jumlah, 0);
           const bonus = d.jumlahBonus || 0;
@@ -2612,7 +2612,7 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
           const totalTerjualSemua = d.items.reduce((a, it) => a + (it.jumlahDibawa - it.jumlahRetur), 0) - bonus;
           return d.items.map((it, idx) => {
             const terjual = it.jumlahDibawa - it.jumlahRetur;
-            const catatanGabung = [d.catatanMulai, d.catatanSelesai].filter(Boolean).join(' / ');
+            const catatanGabung = [bonus > 0 ? `Bonus: ${bonus} pcs` : null, d.catatanMulai, d.catatanSelesai].filter(Boolean).join(' / ');
             return [
               new Date(d.waktuMulai).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }),
               d.waktuSelesai ? new Date(d.waktuSelesai).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }) : 'Berjalan',
@@ -2622,7 +2622,6 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
               it.jumlahRetur,
               terjual,
               harga ? formatRupiah(terjual * harga) : 'belum ada harga',
-              idx === 0 ? (bonus > 0 ? `${bonus} pcs` : '-') : '',
               idx === 0 ? (harga ? formatRupiah(totalTerjualSemua * harga) : '-') : '',
               idx === 0 ? formatRupiah(totalDibayarDistribusi) : '',
               idx === 0 ? (catatanGabung || '-') : '',
