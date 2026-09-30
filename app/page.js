@@ -81,7 +81,7 @@ function hitungPendapatanReseller(distribusiList, pembayaranResellerList, rangeS
     if (d.status !== 'selesai') continue;
     if (!(d.waktuSelesai >= rangeStart && d.waktuSelesai < rangeEnd)) continue;
     const hargaKeReseller = d.hargaKeResellerSnapshot;
-    const totalTerjual = d.items.reduce((a, it) => a + (it.jumlahDibawa - it.jumlahRetur), 0);
+    const totalTerjual = d.items.reduce((a, it) => a + (it.jumlahDibawa - it.jumlahRetur), 0) - (d.jumlahBonus || 0);
     if (!hargaKeReseller) {
       perDistribusi.push({ id: d.id, tujuanNama: d.tujuanNama, waktu: d.waktuSelesai, totalPendapatan: 0, belumAdaHarga: true, totalTerjual, sumberPembayaran: false });
       continue;
@@ -100,8 +100,9 @@ function hitungPendapatanDistribusi(distribusiList, countingList) {
   for (const d of distribusiList) {
     if (d.tujuanTipe !== 'lokasi' || d.status !== 'selesai') continue;
 
-    // Total pendapatan = jumlah terjual (dibawa-retur) × harga snapshot per varian — ini angka pasti (ground truth)
-    const totalPendapatan = d.items.reduce((a, it) => a + (it.jumlahDibawa - it.jumlahRetur) * (it.hargaSatuan || 0), 0);
+    // Total pendapatan = jumlah terjual (dibawa-retur) × harga per varian, dikurangi bonus × harga termurah (bonus selalu ambil varian termurah)
+    const hargaTermurah = d.items.length > 0 ? Math.min(...d.items.map((it) => it.hargaSatuan || 0)) : 0;
+    const totalPendapatan = d.items.reduce((a, it) => a + (it.jumlahDibawa - it.jumlahRetur) * (it.hargaSatuan || 0), 0) - (d.jumlahBonus || 0) * hargaTermurah;
 
     // Cash/QRIS/Transfer = dari counting (uang yang dicatat tim saat jualan), sisanya (kalau ada) masuk "tidak tercatat"
     const countingIni = countingList.filter((c) => c.distribusiId === d.id);
@@ -404,6 +405,7 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
           catatanMulai: d.catatan_mulai,
           catatanSelesai: d.catatan_selesai,
           sumberPendapatanReseller: d.sumber_pendapatan_reseller,
+          jumlahBonus: d.jumlah_bonus || 0,
           items: (distItemRows || [])
             .filter((it) => it.distribusi_id === d.id)
             .map((it) => ({
@@ -681,11 +683,11 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
     setSaveError(!!error);
   };
 
-  const tutupDistribusi = async (distribusiId, returMap, catatanSelesai, sumberPendapatanReseller) => {
-    // returMap: { itemId: jumlahRetur }
+  const tutupDistribusi = async (distribusiId, returMap, catatanSelesai, sumberPendapatanReseller, jumlahBonus = 0) => {
+    // returMap: { itemId: jumlahRetur } — jumlahBonus: 1 angka pcs untuk seluruh distribusi (bukan per varian)
     setDistribusiList((prev) => prev.map((d) => (
       d.id === distribusiId
-        ? { ...d, status: 'selesai', waktuSelesai: Date.now(), catatanSelesai: catatanSelesai || null, sumberPendapatanReseller: sumberPendapatanReseller ?? null, items: d.items.map((it) => ({ ...it, jumlahRetur: returMap[it.id] ?? it.jumlahRetur })) }
+        ? { ...d, status: 'selesai', waktuSelesai: Date.now(), catatanSelesai: catatanSelesai || null, sumberPendapatanReseller: sumberPendapatanReseller ?? null, jumlahBonus, items: d.items.map((it) => ({ ...it, jumlahRetur: returMap[it.id] ?? it.jumlahRetur })) }
         : d
     )));
     const updates = Object.entries(returMap).map(([itemId, jumlahRetur]) =>
@@ -693,7 +695,7 @@ function MainApp({ teamCode, nama, onLogout, onGantiNama }) {
     );
     const { error: eStatus } = await supabase.from('distribusi').update({
       status: 'selesai', waktu_selesai: Date.now(), catatan_selesai: catatanSelesai || null,
-      sumber_pendapatan_reseller: sumberPendapatanReseller ?? null,
+      sumber_pendapatan_reseller: sumberPendapatanReseller ?? null, jumlah_bonus: jumlahBonus || 0,
     }).eq('id', distribusiId).eq('team_code', teamCode);
     const results = await Promise.all(updates);
     setSaveError(!!eStatus || results.some((r) => r.error));
@@ -1600,8 +1602,8 @@ function PendapatanView({ transaksi, pengeluaran, distribusiList, countingList, 
       </div>
 
       {(totalCash > 0 || totalQris > 0 || totalTransfer > 0 || totalTidakTercatat > 0) && (
-        <>
-          <div style={styles.sectionLabel}>Total berdasarkan metode bayar</div>
+        <div style={styles.untungCard}>
+          <div style={{ ...styles.sectionLabel, marginTop: 0 }}>Total berdasarkan metode bayar</div>
           {[
             { key: 'cash', label: 'Cash', icon: <Banknote size={13} style={{ marginRight: 4, verticalAlign: -2 }} />, total: totalCash, sumber: asalPerMetodeAll.cash, color: '#3A2618' },
             { key: 'qris', label: 'QRIS', icon: <QrCode size={13} style={{ marginRight: 4, verticalAlign: -2 }} />, total: totalQris, sumber: asalPerMetodeAll.qris, color: '#3A2618' },
@@ -1611,22 +1613,23 @@ function PendapatanView({ transaksi, pengeluaran, distribusiList, countingList, 
             const isOpen = openMetode.has(key);
             const bisaDibuka = sumber.length > 0;
             return (
-              <div key={key} style={{ ...styles.metodeCard, borderColor: color === '#C0862E' ? '#F0D9B5' : '#F0E4D4' }}>
-                <button
-                  style={styles.metodeCardHeader}
-                  onClick={() => bisaDibuka && toggleMetode(key)}
-                  disabled={!bisaDibuka}
-                >
+              <div key={key} style={{ marginBottom: 10 }}>
+                <div style={styles.untungRow}>
                   <span style={{ color, display: 'flex', alignItems: 'center' }}>{icon}{label}</span>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <strong style={{ color }}>{formatRupiah(total)}</strong>
-                    {bisaDibuka && <ChevronDown size={15} style={{ color: '#B08968', transform: isOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }} />}
-                  </span>
-                </button>
+                  <strong style={{ color }}>{formatRupiah(total)}</strong>
+                </div>
+                {bisaDibuka && (
+                  <button
+                    onClick={() => toggleMetode(key)}
+                    style={{ background: 'none', border: 'none', padding: 0, marginTop: 2, cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 700, color: '#B0714A' }}
+                  >
+                    {isOpen ? 'Sembunyikan detail' : 'Lihat detail'}
+                  </button>
+                )}
                 {isOpen && (
-                  <div style={styles.metodeCardBody}>
+                  <div style={{ marginTop: 4 }}>
                     {sumber.map(([nm, jumlah]) => (
-                      <div key={nm} style={styles.metodeCardBodyRow}>
+                      <div key={nm} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, padding: '5px 0 5px 16px', borderBottom: '1px solid #F8F1E7' }}>
                         <span style={{ color: '#8A6D4E' }}>{nm}</span>
                         <span style={{ fontWeight: 600 }}>{formatRupiah(jumlah)}</span>
                       </div>
@@ -1636,7 +1639,7 @@ function PendapatanView({ transaksi, pengeluaran, distribusiList, countingList, 
               </div>
             );
           })}
-        </>
+        </div>
       )}
 
       <div style={styles.sectionLabel}>Pendapatan per titik jual (total)</div>
@@ -2120,6 +2123,8 @@ function AccordionHeader({ icon, label, count, open, onClick }) {
 
 // ============ LAPORAN VIEW ============
 function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, countingList, pembayaranResellerList }) {
+  const [showSemuaTitikJual, setShowSemuaTitikJual] = useState(false);
+  const [showSemuaReseller, setShowSemuaReseller] = useState(false);
   const [mode, setMode] = useState('harian'); // 'harian' | 'periode' | 'semua'
   const todayStr = new Date().toISOString().slice(0, 10);
   const [tanggal, setTanggal] = useState(todayStr);
@@ -2196,6 +2201,14 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
     }
     return Object.entries(map).filter(([, total]) => total > 0).sort((a, b) => b[1] - a[1]);
   }, [filteredTransaksi, distInfoRange]);
+
+  const perResellerRange = useMemo(() => {
+    const map = {};
+    for (const pr of resellerInfoRange.perDistribusi) {
+      map[pr.tujuanNama] = (map[pr.tujuanNama] || 0) + pr.totalPendapatan;
+    }
+    return Object.entries(map).filter(([, total]) => total > 0).sort((a, b) => b[1] - a[1]);
+  }, [resellerInfoRange]);
 
   // Rincian asal per metode bayar (buat drill-down di kartu "Total berdasarkan metode bayar")
   const asalPerMetode = useMemo(() => {
@@ -2363,12 +2376,14 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
     });
     rows.push([]);
     rows.push(['=== DISTRIBUSI RESELLER (pendapatan dari Catat Pembayaran kalau ada, kalau belum pernah fallback ke estimasi harga×terjual) ===']);
-    rows.push(['Tanggal Mulai', 'Tanggal Selesai', 'Nama Reseller', 'Status', 'Varian', 'Dibawa', 'Retur', 'Terjual', 'Harga ke Reseller (saat itu)', 'Est. Pendapatan (fallback)', 'Total Dibayar (Catat Pembayaran)', 'Catatan Mulai', 'Catatan Selesai', 'Dicatat Oleh']);
+    rows.push(['Tanggal Mulai', 'Tanggal Selesai', 'Nama Reseller', 'Status', 'Varian', 'Dibawa', 'Retur', 'Terjual', 'Harga ke Reseller (saat itu)', 'Est. Pendapatan (fallback, per varian)', 'Bonus (pcs, per distribusi)', 'Est. Pendapatan Setelah Bonus (fallback)', 'Total Dibayar (Catat Pembayaran)', 'Catatan Mulai', 'Catatan Selesai', 'Dicatat Oleh']);
     filteredDistribusi.filter((d) => d.tujuanTipe === 'reseller').forEach((d) => {
       const totalDibayarDistribusi = pembayaranResellerList.filter((p) => p.distribusiId === d.id).reduce((a, p) => a + p.jumlah, 0);
+      const bonus = d.jumlahBonus || 0;
+      const harga = d.hargaKeResellerSnapshot;
+      const totalTerjualSemua = d.items.reduce((a, it) => a + (it.jumlahDibawa - it.jumlahRetur), 0) - bonus;
       d.items.forEach((it, idx) => {
         const terjual = it.jumlahDibawa - it.jumlahRetur;
-        const harga = d.hargaKeResellerSnapshot;
         rows.push([
           new Date(d.waktuMulai).toLocaleString('id-ID'),
           d.waktuSelesai ? new Date(d.waktuSelesai).toLocaleString('id-ID') : '(belum selesai)',
@@ -2380,6 +2395,8 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
           terjual,
           harga || 'belum diatur',
           harga ? terjual * harga : 0,
+          idx === 0 ? bonus : '',
+          idx === 0 ? (harga ? totalTerjualSemua * harga : 0) : '',
           idx === 0 ? totalDibayarDistribusi : '',
           idx === 0 ? (d.catatanMulai || '') : '',
           idx === 0 ? (d.catatanSelesai || '') : '',
@@ -2587,12 +2604,15 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
       doc.text('Distribusi Reseller (pendapatan dari Catat Pembayaran kalau ada)', 14, y);
       autoTable(doc, {
         startY: y + 4,
-        head: [['Mulai', 'Selesai', 'Reseller', 'Varian', 'Dibawa', 'Retur', 'Terjual', 'Est. (fallback)', 'Total Dibayar', 'Catatan']],
+        head: [['Mulai', 'Selesai', 'Reseller', 'Varian', 'Dibawa', 'Retur', 'Terjual', 'Est. (fallback)', 'Est. Setelah Bonus', 'Total Dibayar', 'Catatan']],
         body: distReseller.flatMap((d) => {
           const totalDibayarDistribusi = pembayaranResellerList.filter((p) => p.distribusiId === d.id).reduce((a, p) => a + p.jumlah, 0);
+          const bonus = d.jumlahBonus || 0;
+          const harga = d.hargaKeResellerSnapshot;
+          const totalTerjualSemua = d.items.reduce((a, it) => a + (it.jumlahDibawa - it.jumlahRetur), 0) - bonus;
           return d.items.map((it, idx) => {
             const terjual = it.jumlahDibawa - it.jumlahRetur;
-            const harga = d.hargaKeResellerSnapshot;
+            const catatanGabung = [bonus > 0 ? `Bonus: ${bonus} pcs` : null, d.catatanMulai, d.catatanSelesai].filter(Boolean).join(' / ');
             return [
               new Date(d.waktuMulai).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }),
               d.waktuSelesai ? new Date(d.waktuSelesai).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }) : 'Berjalan',
@@ -2602,8 +2622,9 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
               it.jumlahRetur,
               terjual,
               harga ? formatRupiah(terjual * harga) : 'belum ada harga',
+              idx === 0 ? (harga ? formatRupiah(totalTerjualSemua * harga) : '-') : '',
               idx === 0 ? formatRupiah(totalDibayarDistribusi) : '',
-              idx === 0 ? ([d.catatanMulai, d.catatanSelesai].filter(Boolean).join(' / ') || '-') : '',
+              idx === 0 ? (catatanGabung || '-') : '',
             ];
           });
         }),
@@ -2678,13 +2699,49 @@ function LaporanView({ transaksi, pengeluaran, jenisList, distribusiList, counti
         </div>
         <div style={styles.untungRow}><span>Total pendapatan (semua)</span><strong style={{ color: '#2E7D5B' }}>{formatRupiah(totalPendapatan)}</strong></div>
         <div style={styles.untungRow}><span style={{ paddingLeft: 10 }}>· Langsung + titik jual sendiri</span><strong>{formatRupiah(totalPendapatanLangsungDanTitikJual)}</strong></div>
-        {perTitikJualRange.map(([loc, total]) => (
-          <div key={loc} style={styles.untungRow}>
-            <span style={{ paddingLeft: 24, fontSize: 12, color: '#8A6D4E' }}><MapPin size={11} style={{ marginRight: 4, verticalAlign: -1 }} />{loc}</span>
-            <span style={{ fontSize: 12.5 }}>{formatRupiah(total)}</span>
+        {perTitikJualRange.length > 6 && !showSemuaTitikJual ? (
+          <div style={{ paddingLeft: 24 }}>
+            <button onClick={() => setShowSemuaTitikJual(true)} style={styles.lihatDetailLink}>
+              Lihat detail ({perTitikJualRange.length} titik jual)
+            </button>
           </div>
-        ))}
+        ) : (
+          <>
+            {perTitikJualRange.map(([loc, total]) => (
+              <div key={loc} style={styles.untungRow}>
+                <span style={{ paddingLeft: 24, fontSize: 12, color: '#8A6D4E' }}><MapPin size={11} style={{ marginRight: 4, verticalAlign: -1 }} />{loc}</span>
+                <span style={{ fontSize: 12.5 }}>{formatRupiah(total)}</span>
+              </div>
+            ))}
+            {perTitikJualRange.length > 6 && (
+              <div style={{ paddingLeft: 24 }}>
+                <button onClick={() => setShowSemuaTitikJual(false)} style={styles.lihatDetailLink}>Sembunyikan detail</button>
+              </div>
+            )}
+          </>
+        )}
         <div style={styles.untungRow}><span style={{ paddingLeft: 10 }}>· Distribusi reseller</span><strong>{formatRupiah(resellerInfoRange.totalPendapatan)}</strong></div>
+        {perResellerRange.length > 6 && !showSemuaReseller ? (
+          <div style={{ paddingLeft: 24 }}>
+            <button onClick={() => setShowSemuaReseller(true)} style={styles.lihatDetailLink}>
+              Lihat detail ({perResellerRange.length} reseller)
+            </button>
+          </div>
+        ) : (
+          <>
+            {perResellerRange.map(([nm, total]) => (
+              <div key={nm} style={styles.untungRow}>
+                <span style={{ paddingLeft: 24, fontSize: 12, color: '#8A6D4E' }}><Users size={11} style={{ marginRight: 4, verticalAlign: -1 }} />{nm}</span>
+                <span style={{ fontSize: 12.5 }}>{formatRupiah(total)}</span>
+              </div>
+            ))}
+            {perResellerRange.length > 6 && (
+              <div style={{ paddingLeft: 24 }}>
+                <button onClick={() => setShowSemuaReseller(false)} style={styles.lihatDetailLink}>Sembunyikan detail</button>
+              </div>
+            )}
+          </>
+        )}
         {totalMasukLain > 0 && (
           <div style={styles.untungRow}><span>Pemasukan lain (non-jualan)</span><strong style={{ color: '#2E7D5B' }}>+{formatRupiah(totalMasukLain)}</strong></div>
         )}
@@ -2834,7 +2891,7 @@ function DistribusiView({ jenisList, stokMap, resellerList, outletList, distribu
           onTambahCounting={onTambahCounting}
           onUpdateCounting={onUpdateCounting}
           onHapusCounting={onHapusCounting}
-          onTutup={(returMap, catatanSelesai, pendapatanFinal) => { onTutup(openDist.id, returMap, catatanSelesai, pendapatanFinal); setOpenDist(null); }}
+          onTutup={(returMap, catatanSelesai, pendapatanFinal, jumlahBonus) => { onTutup(openDist.id, returMap, catatanSelesai, pendapatanFinal, jumlahBonus); setOpenDist(null); }}
           onTambahPembayaranReseller={onTambahPembayaranReseller}
           onHapusPembayaranReseller={onHapusPembayaranReseller}
           onUpdateCatatanReturSementara={onUpdateCatatanReturSementara}
@@ -2849,6 +2906,7 @@ function DistribusiCard({ d, jenisList, countingList, onClick, selesai }) {
   const jenisNama = (id) => jenisList.find((j) => j.id === id)?.nama || id;
   const totalDibawa = d.items.reduce((a, it) => a + it.jumlahDibawa, 0);
   const totalRetur = d.items.reduce((a, it) => a + it.jumlahRetur, 0);
+  const totalBonus = d.jumlahBonus || 0;
   const totalCountingRupiah = countingList.filter((c) => c.distribusiId === d.id).reduce((a, c) => a + (c.jumlahRupiah || 0), 0);
 
   return (
@@ -2865,7 +2923,7 @@ function DistribusiCard({ d, jenisList, countingList, onClick, selesai }) {
         Mulai {new Date(d.waktuMulai).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })}
         {selesai && d.waktuSelesai && <> · Selesai {new Date(d.waktuSelesai).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })}</>}
         {' · '}Dibawa {totalDibawa} pcs
-        {selesai && <> · Retur {totalRetur} pcs · Terjual {totalDibawa - totalRetur} pcs</>}
+        {selesai && <> · Retur {totalRetur} pcs{totalBonus > 0 ? ` · Bonus ${totalBonus} pcs` : ''} · Terjual {totalDibawa - totalRetur - totalBonus} pcs</>}
         {!selesai && d.tujuanTipe === 'lokasi' && totalCountingRupiah > 0 && <> · Tercatat {formatRupiah(totalCountingRupiah)}</>}
       </div>
       <div style={styles.distCardItems}>
@@ -3005,6 +3063,7 @@ function DetailDistribusiModal({ d, jenisList, countingList, pembayaranResellerL
   const isReseller = d.tujuanTipe === 'reseller';
   const [showTutup, setShowTutup] = useState(false);
   const [returVal, setReturVal] = useState(() => Object.fromEntries(d.items.map((it) => [it.id, it.jumlahRetur])));
+  const [bonusInput, setBonusInput] = useState(String(d.jumlahBonus || 0));
   const [catatanSelesai, setCatatanSelesai] = useState('');
   const [countNominal, setCountNominal] = useState('');
   const [countMetode, setCountMetode] = useState('Cash');
@@ -3044,15 +3103,17 @@ function DetailDistribusiModal({ d, jenisList, countingList, pembayaranResellerL
 
   const totalDibawa = d.items.reduce((a, it) => a + it.jumlahDibawa, 0);
   const totalReturInput = Object.values(returVal).reduce((a, v) => a + (parseInt(v, 10) || 0), 0);
-  const totalTerjualEstimasi = totalDibawa - totalReturInput;
-  // PENTING: harga yang dipakai beda tergantung tipe tujuan — reseller pakai harga ke reseller (snapshot), bukan harga ritel varian
+  const totalBonusInput = parseInt(bonusInput, 10) || 0;
+  const totalTerjualEstimasi = totalDibawa - totalReturInput - totalBonusInput;
+  const hargaTermurah = d.items.length > 0 ? Math.min(...d.items.map((it) => it.hargaSatuan || 0)) : 0;
+  // PENTING: harga yang dipakai beda tergantung tipe tujuan — reseller pakai harga ke reseller (snapshot), lokasi pakai harga termurah buat bonus
   const totalPendapatanEstimasi = isReseller
     ? totalTerjualEstimasi * (d.hargaKeResellerSnapshot || 0)
     : d.items.reduce((a, it) => {
         const dibawa = it.jumlahDibawa;
         const retur = parseInt(returVal[it.id], 10) || 0;
         return a + (dibawa - retur) * (it.hargaSatuan || 0);
-      }, 0);
+      }, 0) - totalBonusInput * hargaTermurah;
   const totalCountingRupiah = countingList.reduce((a, c) => a + (c.jumlahRupiah || 0), 0);
   const selisihRupiah = totalPendapatanEstimasi - totalCountingRupiah;
   const totalSudahDibayar = (pembayaranResellerList || []).reduce((a, p) => a + p.jumlah, 0);
@@ -3120,7 +3181,7 @@ function DetailDistribusiModal({ d, jenisList, countingList, pembayaranResellerL
           </>
         ) : (
           <>
-            <div style={styles.sectionLabel}>Dibawa / Retur / Terjual</div>
+            <div style={styles.sectionLabel}>Dibawa / Retur / Terjual{d.jumlahBonus > 0 ? ` (di luar bonus ${d.jumlahBonus} pcs)` : ''}</div>
             {d.items.map((it) => (
               <div key={it.id} style={styles.kelolaVarianRow}>
                 <div style={styles.kelolaVarianNama}>{jenisNama(it.jenisId)} - {it.varian}</div>
@@ -3162,7 +3223,7 @@ function DetailDistribusiModal({ d, jenisList, countingList, pembayaranResellerL
                 {pembayaranResellerList.map((p) => (
                   <div key={p.id} style={styles.kelolaVarianRow}>
                     <div style={styles.kelolaVarianNama}>
-                      {formatRupiah(p.jumlah)} · {p.metodeBayar || '-'}
+                      {formatRupiah(p.jumlah)} · {p.metodeBayar || '-'} · {new Date(p.waktu).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}
                       {p.catatan ? <div style={{ fontSize: 10.5, color: '#B08968' }}>{p.catatan}</div> : null}
                     </div>
                     <button style={styles.deleteBtnSmall} onClick={() => onHapusPembayaranReseller(p.id)}><X size={13} /></button>
@@ -3253,6 +3314,23 @@ function DetailDistribusiModal({ d, jenisList, countingList, pembayaranResellerL
               </div>
             ))}
 
+            <div style={styles.kelolaVarianRow}>
+              <div style={styles.kelolaVarianNama}>
+                Bonus (pcs) <span style={{ color: '#B08968' }}>— {isReseller ? 'dihitung pakai harga ke reseller' : 'dihitung pakai varian termurah'}, tidak masuk pendapatan</span>
+              </div>
+              <input
+                type="number" inputMode="numeric"
+                style={{ width: 56, padding: '6px 8px', borderRadius: 8, border: '1px solid #EFDFC8', fontSize: 13 }}
+                value={bonusInput}
+                onChange={(e) => setBonusInput(e.target.value)}
+              />
+            </div>
+            {!isReseller && totalBonusInput > 0 && (
+              <div style={{ fontSize: 11, color: '#B08968', marginTop: 4 }}>
+                Bonus dihitung pakai harga termurah di distribusi ini: {formatRupiah(hargaTermurah)}/pcs
+              </div>
+            )}
+
             <label style={{ ...styles.fieldLabel, marginTop: 10 }}>Catatan penutupan (opsional)</label>
             <input
               style={styles.input}
@@ -3307,7 +3385,7 @@ function DetailDistribusiModal({ d, jenisList, countingList, pembayaranResellerL
               onClick={() => {
                 const returFinal = Object.fromEntries(Object.entries(returVal).map(([k, v]) => [k, parseInt(v, 10) || 0]));
                 const sumberPendapatan = isReseller ? (pakaiCatatPembayaran ? 'pembayaran' : 'retur') : null;
-                onTutup(returFinal, catatanSelesai.trim() || null, sumberPendapatan);
+                onTutup(returFinal, catatanSelesai.trim() || null, sumberPendapatan, totalBonusInput);
               }}
             >
               <CheckCircle2 size={16} /> Konfirmasi & Kembalikan ke Stok
@@ -3442,6 +3520,10 @@ const styles = {
   },
   lokasiRevName: { fontSize: 13, color: '#3A2618', fontWeight: 600 },
   lokasiRevValue: { fontSize: 14, color: '#2E7D5B', fontWeight: 700 },
+  lihatDetailLink: {
+    background: 'none', border: 'none', padding: '4px 0', cursor: 'pointer',
+    fontFamily: 'inherit', fontSize: 12, fontWeight: 700, color: '#B0714A',
+  },
   metodeCard: {
     background: '#fff', borderRadius: 12, marginBottom: 8, boxShadow: '0 1px 3px rgba(58,38,24,0.06)',
     border: '1px solid #F0E4D4', overflow: 'hidden',
